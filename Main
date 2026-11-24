@@ -2,6 +2,7 @@ local cloneref = cloneref or function(o) return o end
 local Players = cloneref(game:GetService("Players"))
 local Workspace = cloneref(game:GetService("Workspace"))
 local CoreGui = cloneref(game:GetService("CoreGui"))
+local GuiService = cloneref(game:GetService("GuiService"))
 local RunService = cloneref(game:GetService("RunService"))
 local UserInputService = cloneref(game:GetService("UserInputService"))
 local TweenService = cloneref(game:GetService("TweenService"))
@@ -284,7 +285,7 @@ local titleLabel = create("TextLabel", {
     Position = UDim2.new(0, 16, 0, 0),
     Size = UDim2.new(1, -90, 1, 0),
     Font = Enum.Font.GothamBold,
-    Text = "⚡ ZENXHUB | SAN DIEGO V1.1",
+    Text = "⚡ ZENXHUB | SAN DIEGO V1.2",
     TextSize = 14,
     TextColor3 = Color3.new(1, 1, 1),
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -614,7 +615,7 @@ local Config = {
     InstantPrompt = false,
     CarSpeedEnabled = false,
     CarMaxSpeed = 160,
-    CarTorque = 30000,
+    CarBoostForce = 80,
     WalkSpeedEnabled = false,
     WalkSpeed = 32,
     Fly = false,
@@ -622,7 +623,7 @@ local Config = {
     NoClip = false,
     Fullbright = false,
     AutoBreakCuffs = false,
-    BreakCuffDelay = 0.05,
+    BreakCuffDelay = 0.04,
     AntiAFK = true,
 }
 
@@ -647,87 +648,119 @@ end
 local function isPlayerCuffed()
     local char = LocalPlayer.Character
     if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and (hum.PlatformStand or hum.WalkSpeed <= 4) then
+        for _, inst in ipairs(char:GetDescendants()) do
+            local n = string.lower(inst.Name)
+            if n:find("cuff") or n:find("arrest") or n:find("detain") or n:find("zip") or n:find("handcuff") or n:find("rope") or n:find("tie") then
+                return true
+            end
+        end
+    end
     for _, inst in ipairs(char:GetDescendants()) do
         local n = string.lower(inst.Name)
-        if n:find("cuff") or n:find("arrest") or n:find("detain") or n:find("zip") then
+        if n:find("cuff") or n:find("arrest") or n:find("detain") or n:find("zip") or n:find("handcuff") then
             return true
         end
     end
     for attr, val in pairs(char:GetAttributes()) do
         local n = string.lower(attr)
-        if (n:find("cuff") or n:find("arrest") or n:find("detain")) and val == true then
+        if (n:find("cuff") or n:find("arrest") or n:find("detain") or n:find("handcuff")) and val == true then
             return true
         end
     end
     for attr, val in pairs(LocalPlayer:GetAttributes()) do
         local n = string.lower(attr)
-        if (n:find("cuff") or n:find("arrest") or n:find("detain")) and val == true then
+        if (n:find("cuff") or n:find("arrest") or n:find("detain") or n:find("handcuff")) and val == true then
             return true
         end
     end
     return false
 end
 
-local function clickGuiButton(btn)
-    if not (btn and btn:IsA("GuiButton")) then return end
+local function triggerGuiClick(guiObj)
+    if not (guiObj and guiObj:IsA("GuiObject")) then return end
+    if guiObj:IsA("GuiButton") then
+        pcall(function()
+            if firesignal then
+                firesignal(guiObj.MouseButton1Click)
+                firesignal(guiObj.Activated)
+                firesignal(guiObj.MouseButton1Down)
+                firesignal(guiObj.MouseButton1Up)
+            end
+        end)
+    end
     pcall(function()
-        if firesignal then
-            firesignal(btn.MouseButton1Click)
-            firesignal(btn.Activated)
-            firesignal(btn.MouseButton1Down)
-            firesignal(btn.MouseButton1Up)
-        end
-    end)
-    pcall(function()
-        local pos = btn.AbsolutePosition
-        local size = btn.AbsoluteSize
-        local cx = pos.X + size.X * 0.5
-        local cy = pos.Y + size.Y * 0.5 + 36
+        local sg = guiObj:FindFirstAncestorOfClass("ScreenGui")
+        local inset = (sg and sg.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
+        local pos = guiObj.AbsolutePosition
+        local size = guiObj.AbsoluteSize
+        local cx = pos.X + size.X * 0.5 + inset.X
+        local cy = pos.Y + size.Y * 0.5 + inset.Y
         VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
         task.wait(0.01)
         VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
     end)
 end
 
-local CUFF_KEYWORDS = { "break", "escape", "struggle", "resist", "cuff", "free", "tap", "mash", "unhand", "unlock" }
+local CUFF_KEYWORDS = { "break", "escape", "struggle", "resist", "cuff", "free", "tap", "mash", "unhand", "unlock", "thoát", "phá", "click" }
 
 task.spawn(function()
     while env.ZenxhubSDCleanup do
         if Config.AutoBreakCuffs then
             local pg = LocalPlayer:FindFirstChild("PlayerGui")
+            local cuffed = isPlayerCuffed()
+            local clickedAny = false
+
             if pg then
-                local cuffed = isPlayerCuffed()
                 for _, obj in ipairs(pg:GetDescendants()) do
-                    if obj:IsA("GuiButton") and isGuiChainVisible(obj) and obj.Active then
+                    if (obj:IsA("GuiButton") or obj:IsA("TextLabel") or obj:IsA("ImageLabel")) and isGuiChainVisible(obj) then
                         local nameLower = string.lower(obj.Name)
-                        local textLower = obj:IsA("TextButton") and string.lower(obj.Text) or ""
+                        local textLower = (obj:IsA("TextButton") or obj:IsA("TextLabel")) and string.lower(obj.Text) or ""
                         local anc = obj:FindFirstAncestorWhichIsA("ScreenGui")
                         local ancLower = anc and string.lower(anc.Name) or ""
 
-                        local matched = false
-                        for _, kw in ipairs(CUFF_KEYWORDS) do
-                            if nameLower:find(kw, 1, true) or textLower:find(kw, 1, true) or ancLower:find(kw, 1, true) then
-                                matched = true
-                                break
+                        if not (anc and anc.Name == "ZenxhubSanDiego") then
+                            local matched = false
+                            for _, kw in ipairs(CUFF_KEYWORDS) do
+                                if nameLower:find(kw, 1, true) or textLower:find(kw, 1, true) or ancLower:find(kw, 1, true) then
+                                    matched = true
+                                    break
+                                end
                             end
-                        end
 
-                        if not matched and cuffed then
-                            local size = obj.AbsoluteSize
-                            if size.X >= 45 and size.Y >= 25 and size.X <= 450 and size.Y <= 250 then
-                                matched = true
+                            if not matched and cuffed and obj:IsA("GuiButton") and obj.Active then
+                                local size = obj.AbsoluteSize
+                                if size.X >= 35 and size.Y >= 20 and size.X <= 500 and size.Y <= 300 then
+                                    matched = true
+                                end
                             end
-                        end
 
-                        if matched then
-                            clickGuiButton(obj)
+                            if matched then
+                                local targetBtn = obj:IsA("GuiButton") and obj or obj:FindFirstAncestorWhichIsA("GuiButton") or obj
+                                triggerGuiClick(targetBtn)
+                                clickedAny = true
+                            end
                         end
                     end
                 end
             end
+
+            if cuffed and not clickedAny then
+                local cam = Workspace.CurrentCamera
+                if cam then
+                    local vp = cam.ViewportSize
+                    pcall(function()
+                        VirtualInputManager:SendMouseButtonEvent(vp.X * 0.5, vp.Y * 0.65, 0, true, game, 1)
+                        task.wait(0.01)
+                        VirtualInputManager:SendMouseButtonEvent(vp.X * 0.5, vp.Y * 0.65, 0, false, game, 1)
+                    end)
+                end
+            end
+
             task.wait(Config.BreakCuffDelay)
         else
-            task.wait(0.25)
+            task.wait(0.2)
         end
     end
 end)
@@ -848,6 +881,63 @@ local function stopFly()
 end
 onCleanup(stopFly)
 
+local function getSeatedVehicle(hum)
+    local seat = hum and hum.SeatPart
+    if not seat then return nil, nil end
+    local model = seat:FindFirstAncestorOfClass("Model")
+    if model and model ~= LocalPlayer.Character then
+        local vSeat = seat:IsA("VehicleSeat") and seat or model:FindFirstChildWhichIsA("VehicleSeat", true)
+        local root = model.PrimaryPart or vSeat or seat
+        return model, vSeat, root
+    end
+    return nil, seat:IsA("VehicleSeat") and seat or nil, seat
+end
+
+track(RunService.Heartbeat:Connect(function(dt)
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (hum and Config.CarSpeedEnabled) then return end
+
+    local model, vSeat, root = getSeatedVehicle(hum)
+    if not root then return end
+
+    if model then
+        for _, d in ipairs(model:GetDescendants()) do
+            if d:IsA("VehicleSeat") then
+                d.MaxSpeed = Config.CarMaxSpeed
+                d.Torque = math.max(d.Torque, 50000)
+            end
+        end
+    elseif vSeat then
+        vSeat.MaxSpeed = Config.CarMaxSpeed
+        vSeat.Torque = math.max(vSeat.Torque, 50000)
+    end
+
+    if not UserInputService:GetFocusedTextBox() then
+        local throttle = 0
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
+            throttle = 1
+        elseif UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
+            throttle = -1
+        elseif vSeat and math.abs(vSeat.ThrottleFloat) > 0.1 then
+            throttle = vSeat.ThrottleFloat
+        end
+
+        if throttle ~= 0 then
+            local ref = vSeat or root
+            local forward = ref.CFrame.LookVector
+            local curVel = root.AssemblyLinearVelocity
+            local targetSpeed = Config.CarMaxSpeed
+            local currentForwardSpeed = curVel:Dot(forward)
+
+            if (throttle > 0 and currentForwardSpeed < targetSpeed) or (throttle < 0 and currentForwardSpeed > -targetSpeed * 0.6) then
+                local boost = forward * (throttle * Config.CarBoostForce * dt * 2.5)
+                root.AssemblyLinearVelocity = curVel + boost
+            end
+        end
+    end
+end))
+
 track(RunService.RenderStepped:Connect(function()
     local char = LocalPlayer.Character
     local hrp = getHRP(char)
@@ -864,12 +954,6 @@ track(RunService.RenderStepped:Connect(function()
                 p.CanCollide = false
             end
         end
-    end
-
-    if Config.CarSpeedEnabled and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
-        local seat = hum.SeatPart
-        seat.MaxSpeed = Config.CarMaxSpeed
-        seat.Torque = Config.CarTorque
     end
 
     if Config.Fly then
@@ -940,8 +1024,8 @@ tJob:Slider("Tầm Tự Động Tương Tác", 5, 50, 25, " studs", function(v) 
 
 tCar:Section("Chỉnh Thông Số Xe (Ngồi Lái)")
 tCar:Toggle("Bật Độ Tốc Độ Xe", false, function(v) Config.CarSpeedEnabled = v end)
-tCar:Slider("Tốc Độ Tối Đa (MaxSpeed)", 50, 500, 160, "", function(v) Config.CarMaxSpeed = v end)
-tCar:Slider("Lực Kéo Động Cơ (Torque)", 5000, 100000, 30000, "", function(v) Config.CarTorque = v end)
+tCar:Slider("Tốc Độ Tối Đa (MaxSpeed)", 60, 600, 160, "", function(v) Config.CarMaxSpeed = v end)
+tCar:Slider("Lực Gia Tốc (Boost Force)", 10, 300, 80, "", function(v) Config.CarBoostForce = v end)
 
 tCar:Section("Di Chuyển Nhân Vật")
 tCar:Toggle("Tăng Tốc Chạy (WalkSpeed)", false, function(v) Config.WalkSpeedEnabled = v end)
@@ -952,7 +1036,7 @@ tCar:Toggle("Xuyên Tường (NoClip)", false, function(v) Config.NoClip = v end
 
 tMisc:Section("Phá Còng Tay (Handcuffs)")
 tMisc:Toggle("Tự Động Ấn Nút Phá Còng", false, function(v) Config.AutoBreakCuffs = v end)
-tMisc:Slider("Tốc Độ Ấn Nút (Càng Thấp Càng Nhanh)", 1, 20, 5, " x0.01s", function(v)
+tMisc:Slider("Tốc Độ Ấn Nút (Càng Thấp Càng Nhanh)", 1, 20, 4, " x0.01s", function(v)
     Config.BreakCuffDelay = v * 0.01
 end)
 
