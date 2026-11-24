@@ -285,7 +285,7 @@ local titleLabel = create("TextLabel", {
     Position = UDim2.new(0, 16, 0, 0),
     Size = UDim2.new(1, -90, 1, 0),
     Font = Enum.Font.GothamBold,
-    Text = "⚡ ZENXHUB | SAN DIEGO V1.2",
+    Text = "⚡ ZENXHUB | SAN DIEGO V1.3",
     TextSize = 14,
     TextColor3 = Color3.new(1, 1, 1),
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -583,6 +583,96 @@ local function addTab(name, icon)
         end))
     end
 
+    function api:Dropdown(text, options, default, callback)
+        local f = create("Frame", {
+            Parent = page,
+            Size = UDim2.new(1, 0, 0, 36),
+            BackgroundColor3 = Theme.Element,
+            BackgroundTransparency = 0.25,
+            ClipsDescendants = true,
+        }, { corner(8), stroke(Theme.Stroke, 1, 0.3) })
+
+        create("TextLabel", {
+            Parent = f,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 0),
+            Size = UDim2.new(1, -155, 0, 36),
+            Font = Enum.Font.Gotham,
+            Text = text,
+            TextSize = 12,
+            TextColor3 = Theme.Text,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        })
+
+        local valLbl = create("TextLabel", {
+            Parent = f,
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -10, 0, 6),
+            Size = UDim2.new(0, 138, 0, 24),
+            BackgroundColor3 = Theme.Off,
+            Font = Enum.Font.GothamBold,
+            Text = tostring(default) .. " ▾",
+            TextSize = 11,
+            TextColor3 = Theme.Accent,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        }, { corner(6) })
+
+        local list = create("ScrollingFrame", {
+            Parent = f,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0, 40),
+            Size = UDim2.new(1, -20, 0, 110),
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollBarThickness = 2,
+            ScrollBarImageColor3 = Theme.Accent,
+        }, {
+            create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }),
+        })
+
+        local current = default
+        local open = false
+        local optionButtons = {}
+
+        local function toggleOpen(s)
+            open = s
+            valLbl.Text = tostring(current) .. (open and " ▴" or " ▾")
+            local height = math.min(#optionButtons * 26, 110)
+            tween(f, 0.18, { Size = UDim2.new(1, 0, 0, open and (44 + height) or 36) })
+        end
+
+        for _, opt in ipairs(options) do
+            local b = create("TextButton", {
+                Parent = list,
+                Size = UDim2.new(1, 0, 0, 24),
+                BackgroundColor3 = Theme.ElementHover,
+                BackgroundTransparency = 0.4,
+                Font = Enum.Font.Gotham,
+                Text = "  " .. tostring(opt),
+                TextSize = 11,
+                TextColor3 = (opt == current) and Theme.Accent or Theme.Text,
+                TextXAlignment = Enum.TextXAlignment.Left,
+            }, { corner(5) })
+            b.MouseButton1Click:Connect(function()
+                current = opt
+                for _, ob in ipairs(optionButtons) do
+                    ob.TextColor3 = (ob.Text == "  " .. tostring(opt)) and Theme.Accent or Theme.Text
+                end
+                toggleOpen(false)
+                if callback then task.spawn(pcall, callback, opt) end
+            end)
+            table.insert(optionButtons, b)
+        end
+
+        local header = create("TextButton", {
+            Parent = f,
+            Size = UDim2.new(1, 0, 0, 36),
+            BackgroundTransparency = 1,
+            Text = "",
+        })
+        header.MouseButton1Click:Connect(function() toggleOpen(not open) end)
+    end
+
     function api:Button(text, callback)
         local b = create("TextButton", {
             Parent = page,
@@ -607,6 +697,14 @@ local function addTab(name, icon)
 end
 
 local Config = {
+    AimEnabled = false,
+    AimMode = "Hold RMB",
+    ShowFOV = true,
+    FOVRadius = 120,
+    AimSmoothness = 4,
+    AimPart = "Head",
+    TeamCheck = false,
+    WallCheck = false,
     PlayerESP = false,
     ShowTeamColor = true,
     ItemCashESP = false,
@@ -631,6 +729,129 @@ local function getHRP(model)
     if not model then return nil end
     return model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model:FindFirstChild("UpperTorso")
 end
+
+local fovCircle = nil
+local fovGuiRing = nil
+local hasDrawing = (Drawing ~= nil and Drawing.new ~= nil)
+
+if hasDrawing then
+    pcall(function()
+        fovCircle = Drawing.new("Circle")
+        fovCircle.Thickness = 1.5
+        fovCircle.NumSides = 64
+        fovCircle.Radius = Config.FOVRadius
+        fovCircle.Filled = false
+        fovCircle.Color = Theme.Accent
+        fovCircle.Transparency = 0.85
+        fovCircle.Visible = false
+    end)
+end
+
+if not fovCircle then
+    fovGuiRing = create("Frame", {
+        Parent = EspGui,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.fromOffset(Config.FOVRadius * 2, Config.FOVRadius * 2),
+        BackgroundTransparency = 1,
+        Visible = false,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+        stroke(Theme.Accent, 1.5, 0.15),
+    })
+end
+
+onCleanup(function()
+    if fovCircle then
+        pcall(function() fovCircle:Remove() end)
+        fovCircle = nil
+    end
+end)
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function isPartVisible(targetPart, targetChar)
+    if not Config.WallCheck then return true end
+    local cam = Workspace.CurrentCamera
+    local char = LocalPlayer.Character
+    if not (cam and char) then return true end
+    rayParams.FilterDescendantsInstances = { char, targetChar }
+    local origin = cam.CFrame.Position
+    local dir = targetPart.Position - origin
+    local result = Workspace:Raycast(origin, dir, rayParams)
+    return result == nil
+end
+
+local function getClosestAimTarget(centerPos)
+    local cam = Workspace.CurrentCamera
+    if not cam then return nil end
+    local bestPart = nil
+    local bestDist = Config.FOVRadius
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            if not (Config.TeamCheck and plr.Team ~= nil and plr.Team == LocalPlayer.Team) then
+                local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    local part = plr.Character:FindFirstChild(Config.AimPart) or getHRP(plr.Character)
+                    if part and part:IsA("BasePart") then
+                        local screenPos, onScreen = cam:WorldToViewportPoint(part.Position)
+                        if onScreen and screenPos.Z > 0 then
+                            local dist = (Vector2.new(screenPos.X, screenPos.Y) - centerPos).Magnitude
+                            if dist <= bestDist and isPartVisible(part, plr.Character) then
+                                bestDist = dist
+                                bestPart = part
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestPart
+end
+
+track(RunService.RenderStepped:Connect(function()
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+
+    local vp = cam.ViewportSize
+    local centerPos = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+    local showRing = Config.AimEnabled and Config.ShowFOV
+
+    if fovCircle then
+        fovCircle.Position = centerPos
+        fovCircle.Radius = Config.FOVRadius
+        fovCircle.Visible = showRing
+    elseif fovGuiRing then
+        fovGuiRing.Position = UDim2.fromOffset(centerPos.X, centerPos.Y)
+        fovGuiRing.Size = UDim2.fromOffset(Config.FOVRadius * 2, Config.FOVRadius * 2)
+        fovGuiRing.Visible = showRing
+    end
+
+    if not Config.AimEnabled then return end
+    if UserInputService:GetFocusedTextBox() then return end
+
+    local activeAim = false
+    if Config.AimMode == "Always On" then
+        activeAim = true
+    elseif Config.AimMode == "Hold RMB" then
+        activeAim = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    elseif Config.AimMode == "Hold E" then
+        activeAim = UserInputService:IsKeyDown(Enum.KeyCode.E)
+    end
+
+    if not activeAim then return end
+
+    local targetPart = getClosestAimTarget(centerPos)
+    if targetPart then
+        local targetCF = CFrame.lookAt(cam.CFrame.Position, targetPart.Position)
+        local alpha = math.clamp(1 / math.max(1, Config.AimSmoothness), 0.05, 1)
+        cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
+    end
+end))
 
 local function isGuiChainVisible(inst)
     local curr = inst
@@ -883,7 +1104,7 @@ onCleanup(stopFly)
 
 local function getSeatedVehicle(hum)
     local seat = hum and hum.SeatPart
-    if not seat then return nil, nil end
+    if not seat then return nil, nil, nil end
     local model = seat:FindFirstAncestorOfClass("Model")
     if model and model ~= LocalPlayer.Character then
         local vSeat = seat:IsA("VehicleSeat") and seat or model:FindFirstChildWhichIsA("VehicleSeat", true)
@@ -1005,10 +1226,25 @@ track(LocalPlayer.Idled:Connect(function()
     end
 end))
 
+local tAim = addTab("Aimbot & FOV", "🎯")
 local tEsp = addTab("Định Vị ESP", "👁️")
 local tJob = addTab("Công Việc", "💼")
 local tCar = addTab("Xe & Di Chuyển", "🏎️")
 local tMisc = addTab("Tiện Ích", "⚙️")
+
+tAim:Section("Aimbot & Vòng Tròn FOV")
+tAim:Toggle("Bật Aimbot", false, function(v) Config.AimEnabled = v end)
+tAim:Dropdown("Chế Độ Kích Hoạt", { "Hold RMB", "Always On", "Hold E" }, "Hold RMB", function(v)
+    Config.AimMode = v
+end)
+tAim:Toggle("Hiện Vòng Tròn FOV", true, function(v) Config.ShowFOV = v end)
+tAim:Slider("Bán Kính FOV", 30, 400, 120, " px", function(v) Config.FOVRadius = v end)
+tAim:Slider("Độ Mượt Aim (Smoothness)", 1, 20, 4, "", function(v) Config.AimSmoothness = v end)
+tAim:Dropdown("Bộ Phận Ngắm", { "Head", "HumanoidRootPart" }, "Head", function(v)
+    Config.AimPart = v
+end)
+tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", false, function(v) Config.TeamCheck = v end)
+tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", false, function(v) Config.WallCheck = v end)
 
 tEsp:Section("Người Chơi & Phe Phái")
 tEsp:Toggle("Bật ESP Người Chơi", false, function(v) Config.PlayerESP = v end)
