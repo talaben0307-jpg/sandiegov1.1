@@ -124,7 +124,7 @@ TitleLbl.Size = UDim2.new(1, -90, 1, 0)
 TitleLbl.Position = UDim2.fromOffset(14, 0)
 TitleLbl.BackgroundTransparency = 1
 TitleLbl.Font = Enum.Font.GothamBold
-TitleLbl.Text = "⚡ ZENXHUB | SAN DIEGO V1.1"
+TitleLbl.Text = "⚡ ZENXHUB | SAN DIEGO V1.2"
 TitleLbl.TextColor3 = Theme.Accent
 TitleLbl.TextSize = 13
 TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -571,8 +571,7 @@ track(RunService.Heartbeat:Connect(function(dt)
 end))
 
 local tCombat = createTab("⚔️ Aim", 1)
-local tCar = createTab("🚗 Xe", 2)
-local tSys = createTab("⚙️ Hệ Thống", 3)
+local tCar = createTab("🚗 Speed PE", 2)
 
 addSection(tCombat, "Aimbot")
 addToggle(tCombat, "Bật Aimbot", false, function(v) Config.AimEnabled = v end)
@@ -582,22 +581,10 @@ addToggle(tCombat, "Hiện Vòng FOV", true, function(v) Config.ShowFov = v end)
 addSlider(tCombat, "Bán Kính FOV", 40, 350, 150, " px", function(v) Config.FovRadius = v end)
 addSlider(tCombat, "Độ Mượt Aim", 0.1, 1, 0.25, "", function(v) Config.Smoothness = v end)
 
-addSection(tCar, "Speed Car")
-addToggle(tCar, "Bật Tăng Tốc Xe", false, function(v) Config.CarSpeedEnabled = v end)
-addSlider(tCar, "Hệ Số Tăng Tốc", 1, 3, 1.6, "x", function(v) Config.CarSpeedMult = v end)
+addSection(tCar, "Speed Xe PE")
+addToggle(tCar, "Bật Speed Xe PE", false, function(v) Config.CarSpeedEnabled = v end)
+addSlider(tCar, "Hệ Số Speed", 1, 3, 1.6, "x", function(v) Config.CarSpeedMult = v end)
 addSlider(tCar, "Tốc Độ Tối Đa", 60, 260, 140, "", function(v) Config.CarMaxSpeed = v end)
-
-addSection(tSys, "Điều Khiển")
-addToggle(tSys, "Ẩn/Hiện bằng phím Z", true, function() end)
-local closeRow = Instance.new("TextButton")
-closeRow.Size = UDim2.new(1, 0, 0, 34)
-closeRow.BackgroundColor3 = Theme.Element
-closeRow.Font = Enum.Font.GothamBold
-closeRow.Text = "🚪 Gỡ Script"
-closeRow.TextColor3 = Theme.Danger
-closeRow.TextSize = 12
-closeRow.Parent = tSys
-Instance.new("UICorner", closeRow).CornerRadius = UDim.new(0, 8)
 
 env.ZenxhubSanDiegoCleanup = function()
     for _, c in ipairs(connections) do
@@ -615,9 +602,6 @@ env.ZenxhubSanDiegoCleanup = function()
 end
 
 CloseBtn.MouseButton1Click:Connect(function()
-    if env.ZenxhubSanDiegoCleanup then env.ZenxhubSanDiegoCleanup() end
-end)
-closeRow.MouseButton1Click:Connect(function()
     if env.ZenxhubSanDiegoCleanup then env.ZenxhubSanDiegoCleanup() end
 end)
 
