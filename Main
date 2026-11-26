@@ -124,7 +124,7 @@ TitleLbl.Size = UDim2.new(1, -90, 1, 0)
 TitleLbl.Position = UDim2.fromOffset(14, 0)
 TitleLbl.BackgroundTransparency = 1
 TitleLbl.Font = Enum.Font.GothamBold
-TitleLbl.Text = "⚡ ZENXHUB | SAN DIEGO V1.0"
+TitleLbl.Text = "⚡ ZENXHUB | SAN DIEGO V1.1"
 TitleLbl.TextColor3 = Theme.Accent
 TitleLbl.TextSize = 13
 TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -487,58 +487,36 @@ local function getCurrentVehicleSeat()
     return nil
 end
 
-local function isMobileDriving()
-    if not UserInputService.TouchEnabled then return false end
+local activeTouches = {}
+track(UserInputService.TouchStarted:Connect(function(touch)
+    activeTouches[touch] = touch.Position
+end))
+track(UserInputService.TouchMoved:Connect(function(touch)
+    if activeTouches[touch] then
+        activeTouches[touch] = touch.Position
+    end
+end))
+track(UserInputService.TouchEnded:Connect(function(touch)
+    activeTouches[touch] = nil
+end))
+
+local function isPeGasPressed(seat)
+    if seat.Throttle > 0.05 then return true end
+
     local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if not pg then return false end
-    for _, gui in ipairs(pg:GetDescendants()) do
-        if (gui:IsA("GuiButton") or gui:IsA("GuiObject")) and gui.Visible then
-            local n = string.lower(gui.Name)
-            local txt = gui:IsA("TextLabel") or gui:IsA("TextButton") and string.lower(gui.Text) or ""
-            if n:find("gas") or n:find("throttle") or n:find("accel") or n:find("brake") or n:find("reverse") or n:find("drive") or n:find("pedal")
-                or txt:find("gas") or txt:find("brake") or txt:find("throttle") or txt:find("phanh") or txt:find("ga") then
-                return true
-            end
-        end
-    end
-    return true
-end
-
-local function getThrottleInput(seat)
-    local throttle = seat.Throttle
-    local steer = seat.Steer
-
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
-        throttle = math.max(throttle, 1)
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
-        throttle = math.min(throttle, -1)
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then
-        steer = math.min(steer, -1)
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then
-        steer = math.max(steer, 1)
-    end
-
-    if isMobileDriving() then
-        local pg = LocalPlayer:FindFirstChild("PlayerGui")
-        if pg then
-            for _, btn in ipairs(pg:GetDescendants()) do
-                if btn:IsA("GuiButton") and btn.Visible then
-                    local n = string.lower(btn.Name)
-                    local txt = btn:IsA("TextButton") and string.lower(btn.Text) or ""
-                    local isPressed = false
-                    pcall(function()
-                        if btn:GetAttribute("Pressed") == true or btn:GetAttribute("Down") == true or btn:GetAttribute("Active") == true then
-                            isPressed = true
-                        end
-                    end)
-                    if isPressed then
-                        if n:find("gas") or n:find("throttle") or n:find("accel") or txt:find("gas") or txt:find("ga") then
-                            throttle = 1
-                        elseif n:find("brake") or n:find("reverse") or txt:find("brake") or txt:find("phanh") then
-                            throttle = -1
+    if pg then
+        for _, gui in ipairs(pg:GetDescendants()) do
+            if gui:IsA("GuiButton") and gui.Visible then
+                local n = string.lower(gui.Name)
+                local txt = gui:IsA("TextButton") and string.lower(gui.Text) or ""
+                if n:find("gas") or n:find("throttle") or n:find("accel") or n:find("drive") or n:find("pedal")
+                    or txt:find("gas") or txt:find("throttle") or txt:find("accel") or txt:find("ga") then
+                    local pos = gui.AbsolutePosition
+                    local sz = gui.AbsoluteSize
+                    for _, tPos in pairs(activeTouches) do
+                        if tPos.X >= pos.X - 10 and tPos.X <= pos.X + sz.X + 10
+                            and tPos.Y >= pos.Y - 10 and tPos.Y <= pos.Y + sz.Y + 10 then
+                            return true
                         end
                     end
                 end
@@ -546,7 +524,17 @@ local function getThrottleInput(seat)
         end
     end
 
-    return throttle, steer
+    if UserInputService.TouchEnabled then
+        local cam = Workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+        for _, tPos in pairs(activeTouches) do
+            if tPos.X > vp.X * 0.55 and tPos.Y > vp.Y * 0.45 then
+                return true
+            end
+        end
+    end
+
+    return false
 end
 
 track(RunService.RenderStepped:Connect(function()
@@ -570,19 +558,20 @@ track(RunService.Heartbeat:Connect(function(dt)
     local seat = getCurrentVehicleSeat()
     if not seat then return end
 
-    local throttle = select(1, getThrottleInput(seat))
-    if math.abs(throttle) > 0.05 then
+    if isPeGasPressed(seat) then
         local vel = seat.AssemblyLinearVelocity
         local forward = seat.CFrame.LookVector
         local currentForwardSpeed = vel:Dot(forward)
-        local targetSpeed = math.clamp(currentForwardSpeed * Config.CarSpeedMult, -Config.CarMaxSpeed, Config.CarMaxSpeed)
-        local boostDelta = (targetSpeed - currentForwardSpeed) * math.min(1, dt * 8)
-        seat.AssemblyLinearVelocity = vel + forward * boostDelta
+        if currentForwardSpeed > 1 then
+            local targetSpeed = math.clamp(currentForwardSpeed * Config.CarSpeedMult, -Config.CarMaxSpeed, Config.CarMaxSpeed)
+            local boostDelta = (targetSpeed - currentForwardSpeed) * math.min(1, dt * 8)
+            seat.AssemblyLinearVelocity = vel + forward * boostDelta
+        end
     end
 end))
 
 local tCombat = createTab("⚔️ Aim", 1)
-local tCar = createTab("🚗 Xe (PE/PC)", 2)
+local tCar = createTab("🚗 Xe", 2)
 local tSys = createTab("⚙️ Hệ Thống", 3)
 
 addSection(tCombat, "Aimbot")
@@ -593,7 +582,7 @@ addToggle(tCombat, "Hiện Vòng FOV", true, function(v) Config.ShowFov = v end)
 addSlider(tCombat, "Bán Kính FOV", 40, 350, 150, " px", function(v) Config.FovRadius = v end)
 addSlider(tCombat, "Độ Mượt Aim", 0.1, 1, 0.25, "", function(v) Config.Smoothness = v end)
 
-addSection(tCar, "Speed Car (Hỗ Trợ PE & PC)")
+addSection(tCar, "Speed Car")
 addToggle(tCar, "Bật Tăng Tốc Xe", false, function(v) Config.CarSpeedEnabled = v end)
 addSlider(tCar, "Hệ Số Tăng Tốc", 1, 3, 1.6, "x", function(v) Config.CarSpeedMult = v end)
 addSlider(tCar, "Tốc Độ Tối Đa", 60, 260, 140, "", function(v) Config.CarMaxSpeed = v end)
