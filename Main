@@ -285,7 +285,7 @@ local titleLabel = create("TextLabel", {
     Position = UDim2.new(0, 16, 0, 0),
     Size = UDim2.new(1, -90, 1, 0),
     Font = Enum.Font.GothamBold,
-    Text = "⚡ ZENXHUB | SAN DIEGO V1.3",
+    Text = "⚡ ZENXHUB | SAN DIEGO V1.4",
     TextSize = 14,
     TextColor3 = Color3.new(1, 1, 1),
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -714,6 +714,9 @@ local Config = {
     CarSpeedEnabled = false,
     CarMaxSpeed = 160,
     CarBoostForce = 80,
+    PeSpeedEnabled = false,
+    PeSpeedMult = 1.6,
+    PeMaxSpeed = 180,
     WalkSpeedEnabled = false,
     WalkSpeed = 32,
     Fly = false,
@@ -771,16 +774,39 @@ end)
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
+local function isSameTeam(plr)
+    if not Config.TeamCheck then return false end
+    if plr == LocalPlayer then return true end
+    if LocalPlayer.Team and plr.Team and LocalPlayer.Team == plr.Team then
+        return true
+    end
+    if LocalPlayer.TeamColor and plr.TeamColor and LocalPlayer.TeamColor == plr.TeamColor then
+        return true
+    end
+    return false
+end
+
 local function isPartVisible(targetPart, targetChar)
     if not Config.WallCheck then return true end
     local cam = Workspace.CurrentCamera
     local char = LocalPlayer.Character
     if not (cam and char) then return true end
-    rayParams.FilterDescendantsInstances = { char, targetChar }
+
+    local ignore = { char, targetChar, MainGui, FloatGui, EspGui }
+    local seatPart = char:FindFirstChildOfClass("Humanoid") and char:FindFirstChildOfClass("Humanoid").SeatPart
+    if seatPart then
+        local veh = seatPart:FindFirstAncestorOfClass("Model")
+        table.insert(ignore, veh or seatPart)
+    end
+    rayParams.FilterDescendantsInstances = ignore
+
     local origin = cam.CFrame.Position
     local dir = targetPart.Position - origin
+    if dir.Magnitude < 0.5 then return true end
+
     local result = Workspace:Raycast(origin, dir, rayParams)
-    return result == nil
+    if not result then return true end
+    return result.Instance:IsDescendantOf(targetChar)
 end
 
 local function getClosestAimTarget(centerPos)
@@ -790,19 +816,19 @@ local function getClosestAimTarget(centerPos)
     local bestDist = Config.FOVRadius
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character then
-            if not (Config.TeamCheck and plr.Team ~= nil and plr.Team == LocalPlayer.Team) then
-                local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 then
-                    local part = plr.Character:FindFirstChild(Config.AimPart) or getHRP(plr.Character)
-                    if part and part:IsA("BasePart") then
-                        local screenPos, onScreen = cam:WorldToViewportPoint(part.Position)
-                        if onScreen and screenPos.Z > 0 then
-                            local dist = (Vector2.new(screenPos.X, screenPos.Y) - centerPos).Magnitude
-                            if dist <= bestDist and isPartVisible(part, plr.Character) then
-                                bestDist = dist
-                                bestPart = part
-                            end
+        if plr ~= LocalPlayer and not isSameTeam(plr) and plr.Character then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                local part = plr.Character:FindFirstChild(Config.AimPart)
+                    or plr.Character:FindFirstChild("Head")
+                    or getHRP(plr.Character)
+                if part and part:IsA("BasePart") then
+                    local screenPos, onScreen = cam:WorldToViewportPoint(part.Position)
+                    if onScreen and screenPos.Z > 0 then
+                        local dist = (Vector2.new(screenPos.X, screenPos.Y) - centerPos).Magnitude
+                        if dist <= bestDist and isPartVisible(part, plr.Character) then
+                            bestDist = dist
+                            bestPart = part
                         end
                     end
                 end
@@ -811,6 +837,14 @@ local function getClosestAimTarget(centerPos)
     end
 
     return bestPart
+end
+
+local function applyCameraAim(cam, targetPart)
+    local camPos = cam.CFrame.Position
+    local targetCF = CFrame.lookAt(camPos, targetPart.Position)
+    local smooth = math.max(1, Config.AimSmoothness)
+    local alpha = smooth <= 1 and 1 or math.clamp(1 / (smooth * 0.65), 0.08, 1)
+    cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
 end
 
 track(RunService.RenderStepped:Connect(function()
@@ -839,6 +873,7 @@ track(RunService.RenderStepped:Connect(function()
         activeAim = true
     elseif Config.AimMode == "Hold RMB" then
         activeAim = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+            or (UserInputService.TouchEnabled and #UserInputService:GetTouches() > 0)
     elseif Config.AimMode == "Hold E" then
         activeAim = UserInputService:IsKeyDown(Enum.KeyCode.E)
     end
@@ -847,9 +882,7 @@ track(RunService.RenderStepped:Connect(function()
 
     local targetPart = getClosestAimTarget(centerPos)
     if targetPart then
-        local targetCF = CFrame.lookAt(cam.CFrame.Position, targetPart.Position)
-        local alpha = math.clamp(1 / math.max(1, Config.AimSmoothness), 0.05, 1)
-        cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
+        applyCameraAim(cam, targetPart)
     end
 end))
 
@@ -1114,47 +1147,113 @@ local function getSeatedVehicle(hum)
     return nil, seat:IsA("VehicleSeat") and seat or nil, seat
 end
 
+local activeTouches = {}
+track(UserInputService.TouchStarted:Connect(function(touch)
+    activeTouches[touch] = touch.Position
+end))
+track(UserInputService.TouchMoved:Connect(function(touch)
+    if activeTouches[touch] then
+        activeTouches[touch] = touch.Position
+    end
+end))
+track(UserInputService.TouchEnded:Connect(function(touch)
+    activeTouches[touch] = nil
+end))
+
+local function isPePedalActive(vSeat)
+    if vSeat and (vSeat.ThrottleFloat > 0.05 or vSeat.Throttle > 0.05) then
+        return true
+    end
+
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if pg then
+        for _, gui in ipairs(pg:GetDescendants()) do
+            if gui:IsA("GuiButton") and isGuiChainVisible(gui) then
+                local n = string.lower(gui.Name)
+                local txt = gui:IsA("TextButton") and string.lower(gui.Text) or ""
+                if n:find("gas") or n:find("throttle") or n:find("accel") or n:find("drive") or n:find("pedal")
+                    or txt:find("gas") or txt:find("throttle") or txt:find("accel") or txt:find("ga") then
+                    local pos = gui.AbsolutePosition
+                    local sz = gui.AbsoluteSize
+                    for _, tPos in pairs(activeTouches) do
+                        if tPos.X >= pos.X - 15 and tPos.X <= pos.X + sz.X + 15
+                            and tPos.Y >= pos.Y - 15 and tPos.Y <= pos.Y + sz.Y + 15 then
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if UserInputService.TouchEnabled then
+        local cam = Workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+        for _, tPos in pairs(activeTouches) do
+            if tPos.X > vp.X * 0.55 and tPos.Y > vp.Y * 0.45 then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
 track(RunService.Heartbeat:Connect(function(dt)
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if not (hum and Config.CarSpeedEnabled) then return end
+    if not hum then return end
 
     local model, vSeat, root = getSeatedVehicle(hum)
     if not root then return end
 
-    if model then
-        for _, d in ipairs(model:GetDescendants()) do
-            if d:IsA("VehicleSeat") then
-                d.MaxSpeed = Config.CarMaxSpeed
-                d.Torque = math.max(d.Torque, 50000)
+    if Config.CarSpeedEnabled then
+        if model then
+            for _, d in ipairs(model:GetDescendants()) do
+                if d:IsA("VehicleSeat") then
+                    d.MaxSpeed = Config.CarMaxSpeed
+                    d.Torque = math.max(d.Torque, 50000)
+                end
+            end
+        elseif vSeat then
+            vSeat.MaxSpeed = Config.CarMaxSpeed
+            vSeat.Torque = math.max(vSeat.Torque, 50000)
+        end
+
+        if not UserInputService:GetFocusedTextBox() then
+            local throttle = 0
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
+                throttle = 1
+            elseif UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
+                throttle = -1
+            elseif vSeat and math.abs(vSeat.ThrottleFloat) > 0.1 then
+                throttle = vSeat.ThrottleFloat
+            end
+
+            if throttle ~= 0 then
+                local ref = vSeat or root
+                local forward = ref.CFrame.LookVector
+                local curVel = root.AssemblyLinearVelocity
+                local targetSpeed = Config.CarMaxSpeed
+                local currentForwardSpeed = curVel:Dot(forward)
+
+                if (throttle > 0 and currentForwardSpeed < targetSpeed) or (throttle < 0 and currentForwardSpeed > -targetSpeed * 0.6) then
+                    local boost = forward * (throttle * Config.CarBoostForce * dt * 2.5)
+                    root.AssemblyLinearVelocity = curVel + boost
+                end
             end
         end
-    elseif vSeat then
-        vSeat.MaxSpeed = Config.CarMaxSpeed
-        vSeat.Torque = math.max(vSeat.Torque, 50000)
     end
 
-    if not UserInputService:GetFocusedTextBox() then
-        local throttle = 0
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
-            throttle = 1
-        elseif UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
-            throttle = -1
-        elseif vSeat and math.abs(vSeat.ThrottleFloat) > 0.1 then
-            throttle = vSeat.ThrottleFloat
-        end
-
-        if throttle ~= 0 then
-            local ref = vSeat or root
-            local forward = ref.CFrame.LookVector
-            local curVel = root.AssemblyLinearVelocity
-            local targetSpeed = Config.CarMaxSpeed
-            local currentForwardSpeed = curVel:Dot(forward)
-
-            if (throttle > 0 and currentForwardSpeed < targetSpeed) or (throttle < 0 and currentForwardSpeed > -targetSpeed * 0.6) then
-                local boost = forward * (throttle * Config.CarBoostForce * dt * 2.5)
-                root.AssemblyLinearVelocity = curVel + boost
-            end
+    if Config.PeSpeedEnabled and isPePedalActive(vSeat) then
+        local ref = vSeat or root
+        local forward = ref.CFrame.LookVector
+        local curVel = root.AssemblyLinearVelocity
+        local fwdSpeed = curVel:Dot(forward)
+        if fwdSpeed > 1.5 then
+            local targetFwd = math.clamp(fwdSpeed * Config.PeSpeedMult, 0, Config.PeMaxSpeed)
+            local delta = (targetFwd - fwdSpeed) * math.min(1, dt * 8)
+            root.AssemblyLinearVelocity = curVel + forward * delta
         end
     end
 end))
@@ -1262,6 +1361,11 @@ tCar:Section("Chỉnh Thông Số Xe (Ngồi Lái)")
 tCar:Toggle("Bật Độ Tốc Độ Xe", false, function(v) Config.CarSpeedEnabled = v end)
 tCar:Slider("Tốc Độ Tối Đa (MaxSpeed)", 60, 600, 160, "", function(v) Config.CarMaxSpeed = v end)
 tCar:Slider("Lực Gia Tốc (Boost Force)", 10, 300, 80, "", function(v) Config.CarBoostForce = v end)
+
+tCar:Section("Speed Xe PE (Bàn Đạp Màn Hình)")
+tCar:Toggle("Bật Speed Xe PE", false, function(v) Config.PeSpeedEnabled = v end)
+tCar:Slider("Hệ Số Speed PE", 1, 4, 2, "x", function(v) Config.PeSpeedMult = v end)
+tCar:Slider("Tốc Độ Tối Đa PE", 60, 600, 180, "", function(v) Config.PeMaxSpeed = v end)
 
 tCar:Section("Di Chuyển Nhân Vật")
 tCar:Toggle("Tăng Tốc Chạy (WalkSpeed)", false, function(v) Config.WalkSpeedEnabled = v end)
