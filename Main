@@ -39,6 +39,7 @@ local function onCleanup(fn)
 end
 
 env.ZenxhubSDCleanup = function()
+    pcall(function() RunService:UnbindFromRenderStep("ZenxhubSDCamlock") end)
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -285,7 +286,7 @@ local titleLabel = create("TextLabel", {
     Position = UDim2.new(0, 16, 0, 0),
     Size = UDim2.new(1, -90, 1, 0),
     Font = Enum.Font.GothamBold,
-    Text = "⚡ ZENXHUB | SAN DIEGO V1.5",
+    Text = "⚡ ZENXHUB | SAN DIEGO V1.6",
     TextSize = 14,
     TextColor3 = Color3.new(1, 1, 1),
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -775,23 +776,41 @@ local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 rayParams.IgnoreWater = true
 
-local function getTeamTag(plr)
-    local candidates = {}
-    if plr.Team and plr.Team.Name then
-        table.insert(candidates, string.lower(plr.Team.Name))
-    end
-    if plr.Character then
-        for attr, val in pairs(plr.Character:GetAttributes()) do
-            local la = string.lower(attr)
-            if (la:find("team") or la:find("role") or la:find("job") or la:find("class") or la:find("faction")) and type(val) == "string" then
-                table.insert(candidates, string.lower(val))
+local function getOverheadTextAndColor(plr)
+    local texts = {}
+    local roleColor = nil
+    local char = plr.Character
+    if char then
+        for _, obj in ipairs(char:GetDescendants()) do
+            if obj:IsA("TextLabel") and obj.Visible and obj.Text ~= "" then
+                local low = string.lower(obj.Text)
+                if low ~= string.lower(plr.Name) and low ~= string.lower(plr.DisplayName) then
+                    table.insert(texts, low)
+                    roleColor = obj.TextColor3
+                end
             end
         end
     end
-    for attr, val in pairs(plr:GetAttributes()) do
-        local la = string.lower(attr)
-        if (la:find("team") or la:find("role") or la:find("job") or la:find("class") or la:find("faction")) and type(val) == "string" then
-            table.insert(candidates, string.lower(val))
+    return table.concat(texts, " "), roleColor
+end
+
+local function getPlayerFaction(plr)
+    local tagParts = {}
+    if plr.Team and plr.Team.Name then
+        table.insert(tagParts, string.lower(plr.Team.Name))
+    end
+    for _, container in ipairs({ plr, plr.Character }) do
+        if container then
+            for attr, val in pairs(container:GetAttributes()) do
+                local la = string.lower(attr)
+                if (la:find("team") or la:find("role") or la:find("job") or la:find("class") or la:find("faction") or la:find("wanted")) then
+                    if type(val) == "string" then
+                        table.insert(tagParts, string.lower(val))
+                    elseif val == true and la:find("wanted") then
+                        table.insert(tagParts, "wanted")
+                    end
+                end
+            end
         end
     end
     local ls = plr:FindFirstChild("leaderstats")
@@ -799,63 +818,66 @@ local function getTeamTag(plr)
         for _, v in ipairs(ls:GetChildren()) do
             local ln = string.lower(v.Name)
             if (ln:find("team") or ln:find("role") or ln:find("job") or ln:find("class")) and v:IsA("StringValue") then
-                table.insert(candidates, string.lower(v.Value))
+                table.insert(tagParts, string.lower(v.Value))
             end
         end
     end
-    return table.concat(candidates, " | ")
-end
 
-local function isLawEnforcement(plr)
-    local tag = getTeamTag(plr)
-    local lawKeywords = {
-        "police", "công an", "cop", "sheriff", "swat", "fbi", "dea", "guard",
-        "marshal", "trooper", "officer", "law", "patrol", "cảnh sát", "cs"
-    }
-    for _, kw in ipairs(lawKeywords) do
-        if tag:find(kw, 1, true) then
-            return true
+    local overheadTxt, overheadCol = getOverheadTextAndColor(plr)
+    if overheadTxt ~= "" then
+        table.insert(tagParts, overheadTxt)
+    end
+
+    local combined = table.concat(tagParts, " | ")
+
+    local lawWords = { "police", "cop", "sheriff", "swat", "fbi", "dea", "guard", "marshal", "trooper", "officer", "law", "patrol", "công an", "cảnh sát" }
+    for _, kw in ipairs(lawWords) do
+        if combined:find(kw, 1, true) then
+            return "LAW"
         end
     end
-    if plr.TeamColor and (plr.TeamColor == BrickColor.new("Bright blue") or plr.TeamColor == BrickColor.new("Navy blue")) then
-        return true
-    end
-    return false
-end
 
-local function isCriminal(plr)
-    local tag = getTeamTag(plr)
-    local crimKeywords = {
-        "criminal", "kẻ xấu", "outlaw", "robber", "thief", "gang", "mafia",
-        "wanted", "inmate", "prisoner", "tội phạm", "cướp", "băng"
-    }
-    for _, kw in ipairs(crimKeywords) do
-        if tag:find(kw, 1, true) then
-            return true
+    local crimWords = { "criminal", "outlaw", "robber", "thief", "gang", "mafia", "wanted", "inmate", "prisoner", "smuggler", "cartel", "bandit", "tội phạm", "kẻ xấu", "cướp" }
+    for _, kw in ipairs(crimWords) do
+        if combined:find(kw, 1, true) then
+            return "CRIM"
         end
     end
-    if plr.TeamColor and (plr.TeamColor == BrickColor.new("Bright red") or plr.TeamColor == BrickColor.new("Really red")) then
-        return true
+
+    if overheadCol then
+        if overheadCol.B > 0.65 and overheadCol.R < 0.45 then
+            return "LAW"
+        elseif overheadCol.R > 0.65 and overheadCol.B < 0.45 then
+            return "CRIM"
+        end
     end
-    return false
+
+    if plr.TeamColor then
+        local tc = plr.TeamColor.Color
+        if tc.B > 0.65 and tc.R < 0.45 then
+            return "LAW"
+        elseif tc.R > 0.65 and tc.B < 0.45 then
+            return "CRIM"
+        end
+    end
+
+    return "CIV"
 end
 
 local function isSameTeam(plr)
     if not Config.TeamCheck then return false end
     if plr == LocalPlayer then return true end
 
-    local myLaw = isLawEnforcement(LocalPlayer)
-    local myCrim = isCriminal(LocalPlayer)
-    local theirLaw = isLawEnforcement(plr)
-    local theirCrim = isCriminal(plr)
+    local myFaction = getPlayerFaction(LocalPlayer)
+    local theirFaction = getPlayerFaction(plr)
 
-    if myLaw and theirLaw then return true end
-    if myCrim and theirCrim then return true end
+    if myFaction == "LAW" then
+        return theirFaction == "LAW"
+    elseif myFaction == "CRIM" then
+        return theirFaction == "CRIM"
+    end
 
     if LocalPlayer.Team and plr.Team and LocalPlayer.Team == plr.Team then
-        return true
-    end
-    if LocalPlayer.TeamColor and plr.TeamColor and LocalPlayer.TeamColor == plr.TeamColor then
         return true
     end
     return false
@@ -889,7 +911,7 @@ local function isPartVisible(targetPart, targetChar)
     local result = Workspace:Raycast(origin, dir, rayParams)
     if not result then return true end
     if result.Instance:IsDescendantOf(targetChar) then return true end
-    if result.Instance.Transparency >= 0.85 or not result.Instance.CanCollide then
+    if result.Instance.Transparency >= 0.8 or not result.Instance.CanCollide then
         return true
     end
     return false
@@ -897,7 +919,7 @@ end
 
 local lockedPlayer = nil
 
-local function isPlayerValidTarget(plr, cam, centerPos, ignoreFov)
+local function isPlayerValidTarget(plr, cam, centerPos)
     if not plr or plr == LocalPlayer or not plr.Parent then return false, nil, math.huge end
     if isSameTeam(plr) then return false, nil, math.huge end
 
@@ -915,7 +937,7 @@ local function isPlayerValidTarget(plr, cam, centerPos, ignoreFov)
     if not onScreen or screenPos.Z <= 0 then return false, nil, math.huge end
 
     local dist2D = (Vector2.new(screenPos.X, screenPos.Y) - centerPos).Magnitude
-    if not ignoreFov and dist2D > Config.FOVRadius then
+    if dist2D > Config.FOVRadius then
         return false, nil, math.huge
     end
 
@@ -931,7 +953,7 @@ local function getClosestAimTarget(centerPos)
     if not cam then return nil end
 
     if lockedPlayer then
-        local ok, part = isPlayerValidTarget(lockedPlayer, cam, centerPos, true)
+        local ok, part = isPlayerValidTarget(lockedPlayer, cam, centerPos)
         if ok and part then
             return part
         else
@@ -944,7 +966,7 @@ local function getClosestAimTarget(centerPos)
     local bestDist = Config.FOVRadius
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        local ok, part, dist = isPlayerValidTarget(plr, cam, centerPos, false)
+        local ok, part, dist = isPlayerValidTarget(plr, cam, centerPos)
         if ok and part and dist <= bestDist then
             bestDist = dist
             bestPart = part
@@ -959,23 +981,19 @@ local function getClosestAimTarget(centerPos)
     return bestPart
 end
 
-local function lockCameraAndMouse(cam, targetPart)
+local function lockCameraHard(cam, targetPart)
     local camPos = cam.CFrame.Position
     local targetCF = CFrame.lookAt(camPos, targetPart.Position)
     local smooth = math.max(1, Config.AimSmoothness)
-    local alpha = smooth <= 1 and 1 or math.clamp(1 / (smooth * 0.55), 0.12, 1)
-    cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
-
-    local screenPos = cam:WorldToViewportPoint(targetPart.Position)
-    local inset = GuiService:GetGuiInset()
-    local targetX = screenPos.X + inset.X
-    local targetY = screenPos.Y + inset.Y
-    pcall(function()
-        VirtualInputManager:SendMouseMoveEvent(targetX, targetY, game)
-    end)
+    if smooth <= 1 then
+        cam.CFrame = targetCF
+    else
+        local alpha = math.clamp(1 / (smooth * 0.45), 0.15, 1)
+        cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
+    end
 end
 
-track(RunService.RenderStepped:Connect(function()
+RunService:BindToRenderStep("ZenxhubSDCamlock", Enum.RenderPriority.Camera.Value + 1, function()
     local cam = Workspace.CurrentCamera
     if not cam then return end
 
@@ -1016,9 +1034,9 @@ track(RunService.RenderStepped:Connect(function()
 
     local targetPart = getClosestAimTarget(centerPos)
     if targetPart then
-        lockCameraAndMouse(cam, targetPart)
+        lockCameraHard(cam, targetPart)
     end
-end))
+end)
 
 local function isGuiChainVisible(inst)
     local curr = inst
@@ -1207,8 +1225,9 @@ task.spawn(function()
                     local hum = plr.Character:FindFirstChildOfClass("Humanoid")
                     if hrp and hum and hum.Health > 0 then
                         local dist = math.floor((hrp.Position - myHrp.Position).Magnitude)
-                        local teamName = plr.Team and plr.Team.Name or "Civilian"
-                        local color = (Config.ShowTeamColor and plr.Team) and plr.TeamColor.Color or Theme.Accent
+                        local faction = getPlayerFaction(plr)
+                        local teamName = plr.Team and plr.Team.Name or faction
+                        local color = (Config.ShowTeamColor and plr.Team) and plr.TeamColor.Color or (faction == "LAW" and Theme.Accent or (faction == "CRIM" and Theme.Danger or Theme.Warn))
                         local label = string.format("%s [%s]\nHP: %d | %dm", plr.DisplayName, teamName, math.floor(hum.Health), dist)
                         makeEspTag(hrp, "PlayerESP", label, color)
                     end
