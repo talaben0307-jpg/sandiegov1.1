@@ -40,7 +40,6 @@ local function onCleanup(fn)
 end
 
 env.ZenxhubSDCleanup = function()
-	pcall(function() RunService:UnbindFromRenderStep("ZenxhubSDCamAim") end)
 	for _, c in ipairs(connections) do
 		pcall(function() c:Disconnect() end)
 	end
@@ -296,7 +295,7 @@ local titleLabel = create("TextLabel", {
 	Position = UDim2.new(0, 16, 0, 0),
 	Size = UDim2.new(1, -90, 1, 0),
 	Font = Enum.Font.GothamBold,
-	Text = "⚡ ZENXHUB | SAN DIEGO V1.14",
+	Text = "⚡ ZENXHUB | SAN DIEGO V1.15",
 	TextSize = 14,
 	TextColor3 = Color3.new(1, 1, 1),
 	TextXAlignment = Enum.TextXAlignment.Left,
@@ -785,9 +784,12 @@ local Config = {
 	AimEnabled = false,
 	LockKey = Enum.KeyCode.Q,
 	ShowLockScreenBtn = true,
-	MaxLockDistance = 200,
-	AimSmoothness = 1,
-	AimPart = "Head",
+	UseFov = true,
+	ShowFovCircle = true,
+	FovRadius = 150,
+	MaxLockDistance = 220,
+	AimSmoothness = 0.35,
+	AimPart = "HumanoidRootPart",
 	TeamCheck = true,
 	WallCheck = true,
 	PlayerESP = false,
@@ -813,61 +815,89 @@ local Config = {
 	AntiAFK = true,
 }
 
-local lockedPlayer = nil
-local cachedTargetPart = nil
-local lastTargetScan = 0
-local aimToggleRef = nil
+local FovGui = create("ScreenGui", {
+	Name = "ZenxhubSDFov",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	Enabled = true,
+	Parent = parentGui,
+})
 
-local function refreshLockScreenBtnVisual()
-	LockBtnGui.Enabled = Config.ShowLockScreenBtn
-	if Config.AimEnabled then
-		LockScreenBtn.Text = "LOCK\nON"
-		LockScreenBtn.TextColor3 = Theme.Good
-		LockScreenBtn.BackgroundColor3 = Theme.PanelAlt
-	else
-		LockScreenBtn.Text = "LOCK\nOFF"
-		LockScreenBtn.TextColor3 = Theme.Text
-		LockScreenBtn.BackgroundColor3 = Theme.Background
-	end
-end
+local FovCircle = create("Frame", {
+	Parent = FovGui,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(Config.FovRadius * 2, Config.FovRadius * 2),
+	BackgroundTransparency = 1,
+	Visible = false,
+}, {
+	create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+	stroke(Theme.Accent, 1.5, 0.2),
+})
 
-local function clearLockState()
-	lockedPlayer = nil
-	cachedTargetPart = nil
-end
-
-local function setAimLock(state)
-	Config.AimEnabled = state
-	if not state then
-		clearLockState()
-	end
-	if aimToggleRef then
-		aimToggleRef.Set(state)
-	end
-	refreshLockScreenBtnVisual()
-end
-
-LockScreenBtn.MouseButton1Click:Connect(function()
-	if not lockBtnWasDragged() then
-		setAimLock(not Config.AimEnabled)
-	end
+onCleanup(function()
+	FovGui:Destroy()
 end)
 
-track(UserInputService.InputBegan:Connect(function(input, gp)
-	if gp or UserInputService:GetFocusedTextBox() then return end
-	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Config.LockKey then
-		setAimLock(not Config.AimEnabled)
-	end
-end))
+local isLocked = false
+local targetPart, targetHum, targetMarker = nil, nil, nil
+local aimToggleRef = nil
 
 local function getHRP(model)
 	if not model then return nil end
 	return model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model:FindFirstChild("UpperTorso")
 end
 
-local rayParams = RaycastParams.new()
-rayParams.FilterType = Enum.RaycastFilterType.Exclude
-rayParams.IgnoreWater = true
+local function destroyMarker()
+	if targetMarker then
+		targetMarker:Destroy()
+		targetMarker = nil
+	end
+end
+
+local function resetCamera()
+	local cam = Workspace.CurrentCamera
+	if not cam then return end
+	cam.CameraType = Enum.CameraType.Custom
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then cam.CameraSubject = hum end
+end
+
+local function clearLockState(syncToggle)
+	isLocked = false
+	targetPart, targetHum = nil, nil
+	destroyMarker()
+	resetCamera()
+	if syncToggle and aimToggleRef then
+		aimToggleRef.Set(false)
+	end
+end
+
+local function createMarker(model)
+	destroyMarker()
+	local m = Instance.new("BillboardGui")
+	m.Name = "LockTargetMarker"
+	m.Adornee = model
+	m.AlwaysOnTop = true
+	m.Enabled = true
+	m.Size = UDim2.fromOffset(90, 90)
+	m.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
+	m.MaxDistance = Config.MaxLockDistance
+	m.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	m.Parent = parentGui
+	create("Frame", {
+		Parent = m,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(22, 22),
+		BackgroundTransparency = 1,
+	}, {
+		create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+		stroke(Theme.Good, 2, 0.1),
+	})
+	targetMarker = m
+end
 
 local function getPlayerTeamKey(plr)
 	if plr.Team then
@@ -890,15 +920,6 @@ local function getPlayerTeamKey(plr)
 			return tostring(val)
 		end
 	end
-	local ls = plr:FindFirstChild("leaderstats")
-	if ls then
-		for _, v in ipairs(ls:GetChildren()) do
-			local ln = string.lower(v.Name)
-			if (ln:find("team") or ln:find("role") or ln:find("job") or ln:find("faction")) and v:IsA("StringValue") and v.Value ~= "" then
-				return v.Value
-			end
-		end
-	end
 	return nil
 end
 
@@ -919,29 +940,27 @@ local function isSameTeam(plr)
 	return false
 end
 
-local function isPartVisible(targetPart, targetChar)
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.IgnoreWater = true
+
+local function isPartVisible(part, targetChar)
 	if not Config.WallCheck then return true end
 	local cam = Workspace.CurrentCamera
 	local char = LocalPlayer.Character
 	if not (cam and char) then return true end
 
-	local ignore = { char, targetChar, MainGui, FloatGui, LockBtnGui, EspGui }
+	local ignore = { char, targetChar, MainGui, FloatGui, LockBtnGui, FovGui, EspGui }
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	local seatPart = hum and hum.SeatPart
 	if seatPart then
 		local veh = seatPart:FindFirstAncestorOfClass("Model")
 		table.insert(ignore, veh or seatPart)
 	end
-	local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
-	local targetSeat = targetHum and targetHum.SeatPart
-	if targetSeat then
-		local tVeh = targetSeat:FindFirstAncestorOfClass("Model")
-		table.insert(ignore, tVeh or targetSeat)
-	end
 	rayParams.FilterDescendantsInstances = ignore
 
 	local origin = cam.CFrame.Position
-	local dir = targetPart.Position - origin
+	local dir = part.Position - origin
 	if dir.Magnitude < 0.5 then return true end
 
 	local result = Workspace:Raycast(origin, dir, rayParams)
@@ -953,132 +972,188 @@ local function isPartVisible(targetPart, targetChar)
 	return false
 end
 
-local function getAimAnchorPart(char)
-	if not char then return nil end
-	local head = char:FindFirstChild("Head")
-	local hrp = getHRP(char)
+local function getAimPart(model)
+	if not model then return nil end
 	if Config.AimPart == "Head" then
-		return head or hrp
+		return model:FindFirstChild("Head") or getHRP(model) or model.PrimaryPart
 	end
-	return hrp or head
+	return getHRP(model) or model.PrimaryPart or model:FindFirstChild("Head")
 end
 
-local function getTargetPartOnly(plr)
-	if not plr or plr == LocalPlayer or not plr.Parent then return nil end
-	if isSameTeam(plr) then return nil end
-
-	local char = plr.Character
-	if not char or not char.Parent then return nil end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum or hum.Health <= 0 then return nil end
-
-	return getAimAnchorPart(char)
-end
-
-local function isLockedTargetStillValid(plr, myPos)
-	local part = getTargetPartOnly(plr)
-	if not (part and part:IsA("BasePart")) then return nil end
-	if (part.Position - myPos).Magnitude > Config.MaxLockDistance then
-		return nil
+local function getValidTargetPart(model)
+	if not (model and model.Parent and model:IsA("Model")) or model == LocalPlayer.Character then
+		return nil, nil
 	end
-	return part
+	local plr = Players:GetPlayerFromCharacter(model)
+	if not plr or plr == LocalPlayer or isSameTeam(plr) then
+		return nil, nil
+	end
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return nil, nil end
+	local part = getAimPart(model)
+	if part and part:IsA("BasePart") then
+		return part, hum
+	end
+	return nil, nil
 end
 
-local function findNearestEnemy(myPos)
-	local bestPlr = nil
-	local bestPart = nil
-	local bestDist = Config.MaxLockDistance
+local function findBestTarget()
+	local char = LocalPlayer.Character
+	local hrp = getHRP(char)
+	local cam = Workspace.CurrentCamera
+	if not (hrp and cam) then return nil, nil end
 
-	for _, plr in ipairs(Players:GetPlayers()) do
-		local part = getTargetPartOnly(plr)
-		if part and part:IsA("BasePart") and plr.Character then
-			local dist = (part.Position - myPos).Magnitude
-			if dist <= bestDist and (not Config.WallCheck or isPartVisible(part, plr.Character)) then
-				bestDist = dist
-				bestPlr = plr
-				bestPart = part
+	local vp = cam.ViewportSize
+	local center = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+	local bestPart, bestHum, bestScore = nil, nil, math.huge
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LocalPlayer and p.Character then
+			local part, hum = getValidTargetPart(p.Character)
+			if part then
+				local worldDist = (part.Position - hrp.Position).Magnitude
+				if worldDist <= Config.MaxLockDistance then
+					local sp, onScreen = cam:WorldToViewportPoint(part.Position)
+					if onScreen and sp.Z > 0 then
+						local screenDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+						if (not Config.UseFov or screenDist <= Config.FovRadius) and isPartVisible(part, p.Character) then
+							local score = Config.UseFov and screenDist or worldDist
+							if score < bestScore then
+								bestScore = score
+								bestPart, bestHum = part, hum
+							end
+						end
+					end
+				end
 			end
 		end
 	end
 
-	return bestPlr, bestPart
+	return bestPart, bestHum
 end
 
-local function resolveAimTarget(myPos)
-	if lockedPlayer then
-		local part = isLockedTargetStillValid(lockedPlayer, myPos)
-		if part then
-			cachedTargetPart = part
-			return part
-		else
-			clearLockState()
+local function refreshLockScreenBtnVisual()
+	LockBtnGui.Enabled = Config.ShowLockScreenBtn
+	if isLocked then
+		LockScreenBtn.Text = "LOCK\nON"
+		LockScreenBtn.TextColor3 = Theme.Good
+		LockScreenBtn.BackgroundColor3 = Theme.PanelAlt
+	else
+		LockScreenBtn.Text = "LOCK\nOFF"
+		LockScreenBtn.TextColor3 = Theme.Text
+		LockScreenBtn.BackgroundColor3 = Theme.Background
+	end
+end
+
+local function lockOn()
+	local part, hum = findBestTarget()
+	if not (part and hum) then
+		isLocked = false
+		targetPart, targetHum = nil, nil
+		destroyMarker()
+		resetCamera()
+		refreshLockScreenBtnVisual()
+		return false
+	end
+	targetPart, targetHum = part, hum
+	isLocked = true
+	createMarker(part.Parent)
+	refreshLockScreenBtnVisual()
+	return true
+end
+
+local function setAimLock(state)
+	Config.AimEnabled = state
+	if state then
+		if not lockOn() and aimToggleRef then
+			aimToggleRef.Set(false)
 		end
+	else
+		clearLockState(false)
 	end
-
-	local now = os.clock()
-	if now - lastTargetScan >= 0.15 or not cachedTargetPart then
-		lastTargetScan = now
-		local plr, part = findNearestEnemy(myPos)
-		lockedPlayer = plr
-		cachedTargetPart = part
-	end
-
-	return cachedTargetPart
+	refreshLockScreenBtnVisual()
 end
 
-local function computeAimPoint(targetPart)
-	local pos = targetPart.Position
-	if Config.AimPart == "Head" and targetPart.Name == "Head" then
-		return pos - Vector3.new(0, 0.15, 0)
+LockScreenBtn.MouseButton1Click:Connect(function()
+	if not lockBtnWasDragged() then
+		setAimLock(not Config.AimEnabled)
 	end
-	return pos
-end
+end)
 
-local isRotatingCamera = false
-track(UserInputService.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton2 or input.UserInputType == Enum.UserInputType.Touch then
-		isRotatingCamera = true
+track(UserInputService.InputBegan:Connect(function(input, gp)
+	if gp or UserInputService:GetFocusedTextBox() then return end
+	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Config.LockKey then
+		setAimLock(not Config.AimEnabled)
 	end
 end))
-track(UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton2 or input.UserInputType.Touch then
-		isRotatingCamera = false
-	end
-end))
 
-RunService:BindToRenderStep("ZenxhubSDCamAim", Enum.RenderPriority.Camera.Value + 1, function()
-	if not Config.AimEnabled then
-		if lockedPlayer or cachedTargetPart then
-			clearLockState()
-		end
+track(RunService.RenderStepped:Connect(function()
+	FovCircle.Size = UDim2.fromOffset(Config.FovRadius * 2, Config.FovRadius * 2)
+	FovCircle.Visible = Config.AimEnabled and Config.UseFov and Config.ShowFovCircle
+
+	if not Config.AimEnabled or not isLocked then return end
+
+	if not (targetPart and targetPart.Parent and targetHum and targetHum.Health > 0) then
+		clearLockState(true)
+		refreshLockScreenBtnVisual()
 		return
 	end
-	if UserInputService:GetFocusedTextBox() then return end
 
-	local cam = Workspace.CurrentCamera
 	local char = LocalPlayer.Character
-	local myHrp = getHRP(char)
-	if not (cam and myHrp) then return end
-
-	if cam.CameraType == Enum.CameraType.Scriptable then
-		cam.CameraType = Enum.CameraType.Custom
+	local hrp = getHRP(char)
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local cam = Workspace.CurrentCamera
+	if not (hrp and hum and hum.Health > 0 and cam) then
+		clearLockState(true)
+		refreshLockScreenBtnVisual()
+		return
 	end
 
-	local targetPart = resolveAimTarget(myHrp.Position)
-	if not targetPart then return end
-
-	local aimPos = computeAimPoint(targetPart)
-	local camPos = cam.CFrame.Position
-	if (aimPos - camPos).Magnitude < 0.05 then return end
-
-	local desiredCF = CFrame.lookAt(camPos, aimPos)
-	local smooth = math.max(1, Config.AimSmoothness)
-	local alpha = smooth <= 1 and 0.45 or math.clamp(1 / (smooth * 0.9), 0.08, 0.55)
-	if isRotatingCamera then
-		alpha = alpha * 0.45
+	local dist = (targetPart.Position - hrp.Position).Magnitude
+	if dist > Config.MaxLockDistance then
+		clearLockState(true)
+		refreshLockScreenBtnVisual()
+		return
 	end
 
-	cam.CFrame = cam.CFrame:Lerp(desiredCF, alpha)
+	if targetMarker then
+		local sz = math.clamp(140 - dist * 0.14, 70, 140)
+		targetMarker.Size = UDim2.fromOffset(sz, sz)
+	end
+
+	local lookPos = Vector3.new(targetPart.Position.X, hrp.Position.Y, targetPart.Position.Z)
+	if (lookPos - hrp.Position).Magnitude > 0.05 then
+		hrp.CFrame = CFrame.lookAt(hrp.Position, lookPos)
+	end
+
+	cam.CameraType = Enum.CameraType.Scriptable
+	local desired = hrp.CFrame:ToWorldSpace(CFrame.new(0, 6, 12))
+	local targetCF = CFrame.lookAt(desired.Position, targetPart.Position)
+	local alpha = math.clamp(Config.AimSmoothness, 0.05, 1)
+	cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
+end))
+
+local function onCharacter(char)
+	if isLocked then
+		clearLockState(true)
+		refreshLockScreenBtnVisual()
+	end
+	local hum = char:WaitForChild("Humanoid", 5)
+	if hum then
+		hum.Died:Connect(function()
+			if isLocked then
+				clearLockState(true)
+				refreshLockScreenBtnVisual()
+			end
+		end)
+	end
+end
+if LocalPlayer.Character then task.spawn(onCharacter, LocalPlayer.Character) end
+track(LocalPlayer.CharacterAdded:Connect(function(char) task.spawn(onCharacter, char) end))
+
+onCleanup(function()
+	pcall(destroyMarker)
+	if isLocked then pcall(resetCamera) end
 end)
 
 local function isGuiChainVisible(inst)
@@ -1169,7 +1244,7 @@ task.spawn(function()
 						local anc = obj:FindFirstAncestorWhichIsA("ScreenGui")
 						local ancLower = anc and string.lower(anc.Name) or ""
 
-						if not (anc and (anc.Name == "ZenxhubSanDiego" or anc.Name == "ZenxhubSDFloat" or anc.Name == "ZenxhubSDLockBtn")) then
+						if not (anc and (anc.Name == "ZenxhubSanDiego" or anc.Name == "ZenxhubSDFloat" or anc.Name == "ZenxhubSDLockBtn" or anc.Name == "ZenxhubSDFov")) then
 							local matched = false
 							for _, kw in ipairs(CUFF_KEYWORDS) do
 								if nameLower:find(kw, 1, true) or textLower:find(kw, 1, true) or ancLower:find(kw, 1, true) then
@@ -1549,11 +1624,9 @@ local tJob = addTab("Công Việc", "💼")
 local tCar = addTab("Xe & Di Chuyển", "🏎️")
 local tMisc = addTab("Tiện Ích", "⚙️")
 
-tAim:Section("Khóa Mục Tiêu (Lock)")
+tAim:Section("Khóa Mục Tiêu (CPZ Camlock + FOV)")
 aimToggleRef = tAim:Toggle("Bật Lock Mục Tiêu", false, function(v)
-	Config.AimEnabled = v
-	if not v then clearLockState() end
-	refreshLockScreenBtnVisual()
+	setAimLock(v)
 end)
 tAim:Toggle("Nút Lock Trên Màn Hình", true, function(v)
 	Config.ShowLockScreenBtn = v
@@ -1562,18 +1635,26 @@ end)
 tAim:Keybind("Phím Bật/Tắt Lock (PC)", Enum.KeyCode.Q, function(keyCode)
 	Config.LockKey = keyCode
 end)
-tAim:Slider("Giới Hạn Khoảng Cách", 20, 400, 200, " studs", function(v)
+tAim:Toggle("Lọc Trong Vòng FOV", true, function(v)
+	Config.UseFov = v
+end)
+tAim:Toggle("Hiện Vòng Tròn FOV", true, function(v)
+	Config.ShowFovCircle = v
+end)
+tAim:Slider("Bán Kính FOV", 40, 400, 150, " px", function(v)
+	Config.FovRadius = v
+end)
+tAim:Slider("Giới Hạn Khoảng Cách", 20, 500, 220, " studs", function(v)
 	Config.MaxLockDistance = v
 end)
-tAim:Slider("Độ Mượt Lock (1 = Khóa Cứng)", 1, 20, 1, "", function(v)
-	Config.AimSmoothness = v
+tAim:Slider("Độ Mượt Camlock (x0.05)", 1, 20, 7, "", function(v)
+	Config.AimSmoothness = math.clamp(v * 0.05, 0.05, 1)
 end)
-tAim:Dropdown("Bộ Phận Ngắm", { "Head", "HumanoidRootPart" }, "Head", function(v)
+tAim:Dropdown("Bộ Phận Ngắm", { "HumanoidRootPart", "Head" }, "HumanoidRootPart", function(v)
 	Config.AimPart = v
 end)
 tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", true, function(v)
 	Config.TeamCheck = v
-	clearLockState()
 end)
 tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", true, function(v)
 	Config.WallCheck = v
