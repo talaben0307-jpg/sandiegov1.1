@@ -285,7 +285,7 @@ local titleLabel = create("TextLabel", {
     Position = UDim2.new(0, 16, 0, 0),
     Size = UDim2.new(1, -90, 1, 0),
     Font = Enum.Font.GothamBold,
-    Text = "⚡ ZENXHUB | SAN DIEGO V1.4",
+    Text = "⚡ ZENXHUB | SAN DIEGO V1.5",
     TextSize = 14,
     TextColor3 = Color3.new(1, 1, 1),
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -698,13 +698,13 @@ end
 
 local Config = {
     AimEnabled = false,
-    AimMode = "Hold RMB",
+    AimMode = "Always On",
     ShowFOV = true,
-    FOVRadius = 120,
-    AimSmoothness = 4,
+    FOVRadius = 140,
+    AimSmoothness = 1,
     AimPart = "Head",
-    TeamCheck = false,
-    WallCheck = false,
+    TeamCheck = true,
+    WallCheck = true,
     PlayerESP = false,
     ShowTeamColor = true,
     ItemCashESP = false,
@@ -715,7 +715,7 @@ local Config = {
     CarMaxSpeed = 160,
     CarBoostForce = 80,
     PeSpeedEnabled = false,
-    PeSpeedMult = 1.6,
+    PeSpeedMult = 2,
     PeMaxSpeed = 180,
     WalkSpeedEnabled = false,
     WalkSpeed = 32,
@@ -773,10 +773,85 @@ end)
 
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.IgnoreWater = true
+
+local function getTeamTag(plr)
+    local candidates = {}
+    if plr.Team and plr.Team.Name then
+        table.insert(candidates, string.lower(plr.Team.Name))
+    end
+    if plr.Character then
+        for attr, val in pairs(plr.Character:GetAttributes()) do
+            local la = string.lower(attr)
+            if (la:find("team") or la:find("role") or la:find("job") or la:find("class") or la:find("faction")) and type(val) == "string" then
+                table.insert(candidates, string.lower(val))
+            end
+        end
+    end
+    for attr, val in pairs(plr:GetAttributes()) do
+        local la = string.lower(attr)
+        if (la:find("team") or la:find("role") or la:find("job") or la:find("class") or la:find("faction")) and type(val) == "string" then
+            table.insert(candidates, string.lower(val))
+        end
+    end
+    local ls = plr:FindFirstChild("leaderstats")
+    if ls then
+        for _, v in ipairs(ls:GetChildren()) do
+            local ln = string.lower(v.Name)
+            if (ln:find("team") or ln:find("role") or ln:find("job") or ln:find("class")) and v:IsA("StringValue") then
+                table.insert(candidates, string.lower(v.Value))
+            end
+        end
+    end
+    return table.concat(candidates, " | ")
+end
+
+local function isLawEnforcement(plr)
+    local tag = getTeamTag(plr)
+    local lawKeywords = {
+        "police", "công an", "cop", "sheriff", "swat", "fbi", "dea", "guard",
+        "marshal", "trooper", "officer", "law", "patrol", "cảnh sát", "cs"
+    }
+    for _, kw in ipairs(lawKeywords) do
+        if tag:find(kw, 1, true) then
+            return true
+        end
+    end
+    if plr.TeamColor and (plr.TeamColor == BrickColor.new("Bright blue") or plr.TeamColor == BrickColor.new("Navy blue")) then
+        return true
+    end
+    return false
+end
+
+local function isCriminal(plr)
+    local tag = getTeamTag(plr)
+    local crimKeywords = {
+        "criminal", "kẻ xấu", "outlaw", "robber", "thief", "gang", "mafia",
+        "wanted", "inmate", "prisoner", "tội phạm", "cướp", "băng"
+    }
+    for _, kw in ipairs(crimKeywords) do
+        if tag:find(kw, 1, true) then
+            return true
+        end
+    end
+    if plr.TeamColor and (plr.TeamColor == BrickColor.new("Bright red") or plr.TeamColor == BrickColor.new("Really red")) then
+        return true
+    end
+    return false
+end
 
 local function isSameTeam(plr)
     if not Config.TeamCheck then return false end
     if plr == LocalPlayer then return true end
+
+    local myLaw = isLawEnforcement(LocalPlayer)
+    local myCrim = isCriminal(LocalPlayer)
+    local theirLaw = isLawEnforcement(plr)
+    local theirCrim = isCriminal(plr)
+
+    if myLaw and theirLaw then return true end
+    if myCrim and theirCrim then return true end
+
     if LocalPlayer.Team and plr.Team and LocalPlayer.Team == plr.Team then
         return true
     end
@@ -793,10 +868,17 @@ local function isPartVisible(targetPart, targetChar)
     if not (cam and char) then return true end
 
     local ignore = { char, targetChar, MainGui, FloatGui, EspGui }
-    local seatPart = char:FindFirstChildOfClass("Humanoid") and char:FindFirstChildOfClass("Humanoid").SeatPart
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local seatPart = hum and hum.SeatPart
     if seatPart then
         local veh = seatPart:FindFirstAncestorOfClass("Model")
         table.insert(ignore, veh or seatPart)
+    end
+    local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
+    local targetSeat = targetHum and targetHum.SeatPart
+    if targetSeat then
+        local tVeh = targetSeat:FindFirstAncestorOfClass("Model")
+        table.insert(ignore, tVeh or targetSeat)
     end
     rayParams.FilterDescendantsInstances = ignore
 
@@ -806,45 +888,91 @@ local function isPartVisible(targetPart, targetChar)
 
     local result = Workspace:Raycast(origin, dir, rayParams)
     if not result then return true end
-    return result.Instance:IsDescendantOf(targetChar)
+    if result.Instance:IsDescendantOf(targetChar) then return true end
+    if result.Instance.Transparency >= 0.85 or not result.Instance.CanCollide then
+        return true
+    end
+    return false
+end
+
+local lockedPlayer = nil
+
+local function isPlayerValidTarget(plr, cam, centerPos, ignoreFov)
+    if not plr or plr == LocalPlayer or not plr.Parent then return false, nil, math.huge end
+    if isSameTeam(plr) then return false, nil, math.huge end
+
+    local char = plr.Character
+    if not char or not char.Parent then return false, nil, math.huge end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false, nil, math.huge end
+
+    local part = char:FindFirstChild(Config.AimPart)
+        or char:FindFirstChild("Head")
+        or getHRP(char)
+    if not (part and part:IsA("BasePart")) then return false, nil, math.huge end
+
+    local screenPos, onScreen = cam:WorldToViewportPoint(part.Position)
+    if not onScreen or screenPos.Z <= 0 then return false, nil, math.huge end
+
+    local dist2D = (Vector2.new(screenPos.X, screenPos.Y) - centerPos).Magnitude
+    if not ignoreFov and dist2D > Config.FOVRadius then
+        return false, nil, math.huge
+    end
+
+    if not isPartVisible(part, char) then
+        return false, nil, math.huge
+    end
+
+    return true, part, dist2D
 end
 
 local function getClosestAimTarget(centerPos)
     local cam = Workspace.CurrentCamera
     if not cam then return nil end
+
+    if lockedPlayer then
+        local ok, part = isPlayerValidTarget(lockedPlayer, cam, centerPos, true)
+        if ok and part then
+            return part
+        else
+            lockedPlayer = nil
+        end
+    end
+
     local bestPart = nil
+    local bestPlr = nil
     local bestDist = Config.FOVRadius
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and not isSameTeam(plr) and plr.Character then
-            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                local part = plr.Character:FindFirstChild(Config.AimPart)
-                    or plr.Character:FindFirstChild("Head")
-                    or getHRP(plr.Character)
-                if part and part:IsA("BasePart") then
-                    local screenPos, onScreen = cam:WorldToViewportPoint(part.Position)
-                    if onScreen and screenPos.Z > 0 then
-                        local dist = (Vector2.new(screenPos.X, screenPos.Y) - centerPos).Magnitude
-                        if dist <= bestDist and isPartVisible(part, plr.Character) then
-                            bestDist = dist
-                            bestPart = part
-                        end
-                    end
-                end
-            end
+        local ok, part, dist = isPlayerValidTarget(plr, cam, centerPos, false)
+        if ok and part and dist <= bestDist then
+            bestDist = dist
+            bestPart = part
+            bestPlr = plr
         end
+    end
+
+    if bestPlr then
+        lockedPlayer = bestPlr
     end
 
     return bestPart
 end
 
-local function applyCameraAim(cam, targetPart)
+local function lockCameraAndMouse(cam, targetPart)
     local camPos = cam.CFrame.Position
     local targetCF = CFrame.lookAt(camPos, targetPart.Position)
     local smooth = math.max(1, Config.AimSmoothness)
-    local alpha = smooth <= 1 and 1 or math.clamp(1 / (smooth * 0.65), 0.08, 1)
+    local alpha = smooth <= 1 and 1 or math.clamp(1 / (smooth * 0.55), 0.12, 1)
     cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
+
+    local screenPos = cam:WorldToViewportPoint(targetPart.Position)
+    local inset = GuiService:GetGuiInset()
+    local targetX = screenPos.X + inset.X
+    local targetY = screenPos.Y + inset.Y
+    pcall(function()
+        VirtualInputManager:SendMouseMoveEvent(targetX, targetY, game)
+    end)
 end
 
 track(RunService.RenderStepped:Connect(function()
@@ -865,7 +993,10 @@ track(RunService.RenderStepped:Connect(function()
         fovGuiRing.Visible = showRing
     end
 
-    if not Config.AimEnabled then return end
+    if not Config.AimEnabled then
+        lockedPlayer = nil
+        return
+    end
     if UserInputService:GetFocusedTextBox() then return end
 
     local activeAim = false
@@ -878,11 +1009,14 @@ track(RunService.RenderStepped:Connect(function()
         activeAim = UserInputService:IsKeyDown(Enum.KeyCode.E)
     end
 
-    if not activeAim then return end
+    if not activeAim then
+        lockedPlayer = nil
+        return
+    end
 
     local targetPart = getClosestAimTarget(centerPos)
     if targetPart then
-        applyCameraAim(cam, targetPart)
+        lockCameraAndMouse(cam, targetPart)
     end
 end))
 
@@ -1333,17 +1467,17 @@ local tMisc = addTab("Tiện Ích", "⚙️")
 
 tAim:Section("Aimbot & Vòng Tròn FOV")
 tAim:Toggle("Bật Aimbot", false, function(v) Config.AimEnabled = v end)
-tAim:Dropdown("Chế Độ Kích Hoạt", { "Hold RMB", "Always On", "Hold E" }, "Hold RMB", function(v)
+tAim:Dropdown("Chế Độ Kích Hoạt", { "Always On", "Hold RMB", "Hold E" }, "Always On", function(v)
     Config.AimMode = v
 end)
 tAim:Toggle("Hiện Vòng Tròn FOV", true, function(v) Config.ShowFOV = v end)
-tAim:Slider("Bán Kính FOV", 30, 400, 120, " px", function(v) Config.FOVRadius = v end)
-tAim:Slider("Độ Mượt Aim (Smoothness)", 1, 20, 4, "", function(v) Config.AimSmoothness = v end)
+tAim:Slider("Bán Kính FOV", 30, 400, 140, " px", function(v) Config.FOVRadius = v end)
+tAim:Slider("Độ Mượt Aim (1 = Khóa Cứng)", 1, 20, 1, "", function(v) Config.AimSmoothness = v end)
 tAim:Dropdown("Bộ Phận Ngắm", { "Head", "HumanoidRootPart" }, "Head", function(v)
     Config.AimPart = v
 end)
-tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", false, function(v) Config.TeamCheck = v end)
-tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", false, function(v) Config.WallCheck = v end)
+tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", true, function(v) Config.TeamCheck = v end)
+tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", true, function(v) Config.WallCheck = v end)
 
 tEsp:Section("Người Chơi & Phe Phái")
 tEsp:Toggle("Bật ESP Người Chơi", false, function(v) Config.PlayerESP = v end)
