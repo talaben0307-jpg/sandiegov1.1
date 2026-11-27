@@ -295,7 +295,7 @@ local titleLabel = create("TextLabel", {
 	Position = UDim2.new(0, 16, 0, 0),
 	Size = UDim2.new(1, -90, 1, 0),
 	Font = Enum.Font.GothamBold,
-	Text = "⚡ ZENXHUB | SAN DIEGO V1.15",
+	Text = "⚡ ZENXHUB | SAN DIEGO V1.16",
 	TextSize = 14,
 	TextColor3 = Color3.new(1, 1, 1),
 	TextXAlignment = Enum.TextXAlignment.Left,
@@ -521,16 +521,24 @@ local function addTab(name, icon)
 		})
 
 		local state = default or false
-		local function update(v)
-			state = v
+		local function render()
 			tween(pill, 0.15, { BackgroundColor3 = state and Theme.Accent or Theme.Off })
 			tween(knob, 0.15, { Position = state and UDim2.new(1, -17, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) })
-			if callback then task.spawn(pcall, callback, state) end
+		end
+		local function update(v, silent)
+			state = v and true or false
+			render()
+			if not silent and callback then
+				task.spawn(pcall, callback, state)
+			end
 		end
 
-		hit.MouseButton1Click:Connect(function() update(not state) end)
-		if state then update(true) end
-		return { Get = function() return state end, Set = update }
+		hit.MouseButton1Click:Connect(function() update(not state, false) end)
+		if state then update(true, false) end
+		return {
+			Get = function() return state end,
+			Set = function(v, silent) update(v, silent) end,
+		}
 	end
 
 	function api:Slider(text, min, max, default, suffix, callback)
@@ -839,7 +847,6 @@ onCleanup(function()
 	FovGui:Destroy()
 end)
 
-local isLocked = false
 local targetPart, targetHum, targetMarker = nil, nil, nil
 local aimToggleRef = nil
 
@@ -850,7 +857,7 @@ end
 
 local function destroyMarker()
 	if targetMarker then
-		targetMarker:Destroy()
+		pcall(function() targetMarker:Destroy() end)
 		targetMarker = nil
 	end
 end
@@ -864,14 +871,10 @@ local function resetCamera()
 	if hum then cam.CameraSubject = hum end
 end
 
-local function clearLockState(syncToggle)
-	isLocked = false
+local function clearTargetOnly()
 	targetPart, targetHum = nil, nil
 	destroyMarker()
 	resetCamera()
-	if syncToggle and aimToggleRef then
-		aimToggleRef.Set(false)
-	end
 end
 
 local function createMarker(model)
@@ -1034,7 +1037,7 @@ end
 
 local function refreshLockScreenBtnVisual()
 	LockBtnGui.Enabled = Config.ShowLockScreenBtn
-	if isLocked then
+	if Config.AimEnabled then
 		LockScreenBtn.Text = "LOCK\nON"
 		LockScreenBtn.TextColor3 = Theme.Good
 		LockScreenBtn.BackgroundColor3 = Theme.PanelAlt
@@ -1045,57 +1048,43 @@ local function refreshLockScreenBtnVisual()
 	end
 end
 
-local function lockOn()
-	local part, hum = findBestTarget()
-	if not (part and hum) then
-		isLocked = false
-		targetPart, targetHum = nil, nil
-		destroyMarker()
-		resetCamera()
-		refreshLockScreenBtnVisual()
-		return false
-	end
-	targetPart, targetHum = part, hum
-	isLocked = true
-	createMarker(part.Parent)
-	refreshLockScreenBtnVisual()
-	return true
-end
-
-local function setAimLock(state)
-	Config.AimEnabled = state
-	if state then
-		if not lockOn() and aimToggleRef then
-			aimToggleRef.Set(false)
+local function setAimLock(state, fromToggle)
+	Config.AimEnabled = state and true or false
+	if Config.AimEnabled then
+		local part, hum = findBestTarget()
+		if part and hum then
+			targetPart, targetHum = part, hum
+			createMarker(part.Parent)
 		end
 	else
-		clearLockState(false)
+		clearTargetOnly()
+	end
+	if not fromToggle and aimToggleRef then
+		aimToggleRef.Set(Config.AimEnabled, true)
 	end
 	refreshLockScreenBtnVisual()
 end
 
 LockScreenBtn.MouseButton1Click:Connect(function()
 	if not lockBtnWasDragged() then
-		setAimLock(not Config.AimEnabled)
+		setAimLock(not Config.AimEnabled, false)
 	end
 end)
 
 track(UserInputService.InputBegan:Connect(function(input, gp)
 	if gp or UserInputService:GetFocusedTextBox() then return end
 	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Config.LockKey then
-		setAimLock(not Config.AimEnabled)
+		setAimLock(not Config.AimEnabled, false)
 	end
 end))
 
+local lastScan = 0
 track(RunService.RenderStepped:Connect(function()
 	FovCircle.Size = UDim2.fromOffset(Config.FovRadius * 2, Config.FovRadius * 2)
 	FovCircle.Visible = Config.AimEnabled and Config.UseFov and Config.ShowFovCircle
 
-	if not Config.AimEnabled or not isLocked then return end
-
-	if not (targetPart and targetPart.Parent and targetHum and targetHum.Health > 0) then
-		clearLockState(true)
-		refreshLockScreenBtnVisual()
+	if not Config.AimEnabled then
+		if targetPart then clearTargetOnly() end
 		return
 	end
 
@@ -1104,18 +1093,39 @@ track(RunService.RenderStepped:Connect(function()
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	local cam = Workspace.CurrentCamera
 	if not (hrp and hum and hum.Health > 0 and cam) then
-		clearLockState(true)
-		refreshLockScreenBtnVisual()
+		if targetPart then clearTargetOnly() end
+		return
+	end
+
+	if targetPart then
+		local valid = targetPart.Parent and targetHum and targetHum.Health > 0
+		if valid then
+			local plr = Players:GetPlayerFromCharacter(targetPart.Parent)
+			if not plr or isSameTeam(plr) then
+				valid = false
+			elseif (targetPart.Position - hrp.Position).Magnitude > Config.MaxLockDistance then
+				valid = false
+			end
+		end
+		if not valid then
+			clearTargetOnly()
+		end
+	end
+
+	if not targetPart then
+		local now = os.clock()
+		if now - lastScan >= 0.15 then
+			lastScan = now
+			local part, tHum = findBestTarget()
+			if part and tHum then
+				targetPart, targetHum = part, tHum
+				createMarker(part.Parent)
+			end
+		end
 		return
 	end
 
 	local dist = (targetPart.Position - hrp.Position).Magnitude
-	if dist > Config.MaxLockDistance then
-		clearLockState(true)
-		refreshLockScreenBtnVisual()
-		return
-	end
-
 	if targetMarker then
 		local sz = math.clamp(140 - dist * 0.14, 70, 140)
 		targetMarker.Size = UDim2.fromOffset(sz, sz)
@@ -1134,17 +1144,11 @@ track(RunService.RenderStepped:Connect(function()
 end))
 
 local function onCharacter(char)
-	if isLocked then
-		clearLockState(true)
-		refreshLockScreenBtnVisual()
-	end
+	clearTargetOnly()
 	local hum = char:WaitForChild("Humanoid", 5)
 	if hum then
 		hum.Died:Connect(function()
-			if isLocked then
-				clearLockState(true)
-				refreshLockScreenBtnVisual()
-			end
+			clearTargetOnly()
 		end)
 	end
 end
@@ -1153,7 +1157,7 @@ track(LocalPlayer.CharacterAdded:Connect(function(char) task.spawn(onCharacter, 
 
 onCleanup(function()
 	pcall(destroyMarker)
-	if isLocked then pcall(resetCamera) end
+	pcall(resetCamera)
 end)
 
 local function isGuiChainVisible(inst)
@@ -1626,7 +1630,7 @@ local tMisc = addTab("Tiện Ích", "⚙️")
 
 tAim:Section("Khóa Mục Tiêu (CPZ Camlock + FOV)")
 aimToggleRef = tAim:Toggle("Bật Lock Mục Tiêu", false, function(v)
-	setAimLock(v)
+	setAimLock(v, true)
 end)
 tAim:Toggle("Nút Lock Trên Màn Hình", true, function(v)
 	Config.ShowLockScreenBtn = v
