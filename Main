@@ -134,7 +134,7 @@ do
     local lastSpin = 0
     track(RunService.Heartbeat:Connect(function()
         local now = os.clock()
-        if now - lastSpin < 0.05 then return end
+        if now - lastSpin < 0.08 then return end
         lastSpin = now
         local rot = (now * 60) % 360
         for i = #spinners, 1, -1 do
@@ -294,7 +294,7 @@ local titleLabel = create("TextLabel", {
     Position = UDim2.new(0, 16, 0, 0),
     Size = UDim2.new(1, -90, 1, 0),
     Font = Enum.Font.GothamBold,
-    Text = "⚡ ZENXHUB | SAN DIEGO V1.9",
+    Text = "⚡ ZENXHUB | SAN DIEGO V1.11",
     TextSize = 14,
     TextColor3 = Color3.new(1, 1, 1),
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -812,6 +812,8 @@ local Config = {
 }
 
 local lockedPlayer = nil
+local cachedTargetPart = nil
+local lastTargetScan = 0
 local aimToggleRef = nil
 
 local function refreshLockScreenBtnVisual()
@@ -827,10 +829,15 @@ local function refreshLockScreenBtnVisual()
     end
 end
 
+local function clearLockState()
+    lockedPlayer = nil
+    cachedTargetPart = nil
+end
+
 local function setAimLock(state)
     Config.AimEnabled = state
     if not state then
-        lockedPlayer = nil
+        clearLockState()
     end
     if aimToggleRef then
         aimToggleRef.Set(state)
@@ -944,7 +951,7 @@ local function isPartVisible(targetPart, targetChar)
     return false
 end
 
-local function getValidLockedTargetPart(plr, myPos)
+local function validateEnemyTarget(plr, myPos)
     if not plr or plr == LocalPlayer or not plr.Parent then return nil end
     if isSameTeam(plr) then return nil end
 
@@ -958,21 +965,24 @@ local function getValidLockedTargetPart(plr, myPos)
         or getHRP(char)
     if not (part and part:IsA("BasePart")) then return nil end
 
-    local dist = (part.Position - myPos).Magnitude
-    if dist > Config.MaxLockDistance then return nil end
+    if (part.Position - myPos).Magnitude > Config.MaxLockDistance then
+        return nil
+    end
 
-    if not isPartVisible(part, char) then return nil end
+    if not isPartVisible(part, char) then
+        return nil
+    end
 
     return part
 end
 
-local function pickNearestEnemy(myPos)
+local function findNearestEnemy(myPos)
     local bestPlr = nil
     local bestPart = nil
     local bestDist = Config.MaxLockDistance
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        local part = getValidLockedTargetPart(plr, myPos)
+        local part = validateEnemyTarget(plr, myPos)
         if part then
             local dist = (part.Position - myPos).Magnitude
             if dist <= bestDist then
@@ -986,9 +996,33 @@ local function pickNearestEnemy(myPos)
     return bestPlr, bestPart
 end
 
+local function resolveAimTarget(myPos)
+    if lockedPlayer then
+        local part = validateEnemyTarget(lockedPlayer, myPos)
+        if part then
+            cachedTargetPart = part
+            return part
+        else
+            clearLockState()
+        end
+    end
+
+    local now = os.clock()
+    if now - lastTargetScan >= 0.2 or not cachedTargetPart then
+        lastTargetScan = now
+        local plr, part = findNearestEnemy(myPos)
+        lockedPlayer = plr
+        cachedTargetPart = part
+    end
+
+    return cachedTargetPart
+end
+
 track(RunService.RenderStepped:Connect(function()
     if not Config.AimEnabled then
-        lockedPlayer = nil
+        if lockedPlayer or cachedTargetPart then
+            clearLockState()
+        end
         return
     end
     if UserInputService:GetFocusedTextBox() then return end
@@ -996,38 +1030,23 @@ track(RunService.RenderStepped:Connect(function()
     local cam = Workspace.CurrentCamera
     local char = LocalPlayer.Character
     local myHrp = getHRP(char)
-    if not (cam and myHrp) then
-        lockedPlayer = nil
-        return
+    if not (cam and myHrp) then return end
+
+    if cam.CameraType == Enum.CameraType.Scriptable then
+        cam.CameraType = Enum.CameraType.Custom
     end
 
-    local myPos = myHrp.Position
-    local targetPart = nil
+    local targetPart = resolveAimTarget(myHrp.Position)
+    if not targetPart then return end
 
-    if lockedPlayer then
-        targetPart = getValidLockedTargetPart(lockedPlayer, myPos)
-        if not targetPart then
-            lockedPlayer = nil
-        end
-    end
-
-    if not targetPart then
-        local plr, part = pickNearestEnemy(myPos)
-        if plr and part then
-            lockedPlayer = plr
-            targetPart = part
-        end
-    end
-
-    if targetPart then
-        local targetCF = CFrame.lookAt(cam.CFrame.Position, targetPart.Position)
-        local smooth = math.max(1, Config.AimSmoothness)
-        if smooth <= 1 then
-            cam.CFrame = targetCF
-        else
-            local alpha = math.clamp(1 / (smooth * 0.45), 0.15, 1)
-            cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
-        end
+    local camPos = cam.CFrame.Position
+    local targetCF = CFrame.lookAt(camPos, targetPart.Position)
+    local smooth = math.max(1, Config.AimSmoothness)
+    if smooth <= 1 then
+        cam.CFrame = targetCF
+    else
+        local alpha = math.clamp(1 / (smooth * 0.5), 0.15, 1)
+        cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
     end
 end))
 
@@ -1246,7 +1265,7 @@ task.spawn(function()
             end
         end
 
-        task.wait(0.7)
+        task.wait(0.85)
     end
 end)
 
@@ -1269,7 +1288,7 @@ task.spawn(function()
                 end
             end
         end
-        task.wait(0.4)
+        task.wait(0.5)
     end
 end)
 
@@ -1479,7 +1498,7 @@ local tMisc = addTab("Tiện Ích", "⚙️")
 tAim:Section("Khóa Mục Tiêu (Lock)")
 aimToggleRef = tAim:Toggle("Bật Lock Mục Tiêu", false, function(v)
     Config.AimEnabled = v
-    if not v then lockedPlayer = nil end
+    if not v then clearLockState() end
     refreshLockScreenBtnVisual()
 end)
 tAim:Toggle("Nút Lock Trên Màn Hình", true, function(v)
@@ -1500,7 +1519,7 @@ tAim:Dropdown("Bộ Phận Ngắm", { "Head", "HumanoidRootPart" }, "Head", func
 end)
 tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", true, function(v)
     Config.TeamCheck = v
-    lockedPlayer = nil
+    clearLockState()
 end)
 tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", true, function(v)
     Config.WallCheck = v
