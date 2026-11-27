@@ -39,6 +39,7 @@ local function onCleanup(fn)
 end
 
 env.ZenxhubSDCleanup = function()
+    pcall(function() RunService:UnbindFromRenderStep("ZenxhubSDCamAim") end)
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -294,7 +295,7 @@ local titleLabel = create("TextLabel", {
     Position = UDim2.new(0, 16, 0, 0),
     Size = UDim2.new(1, -90, 1, 0),
     Font = Enum.Font.GothamBold,
-    Text = "⚡ ZENXHUB | SAN DIEGO V1.11",
+    Text = "⚡ ZENXHUB | SAN DIEGO V1.12",
     TextSize = 14,
     TextColor3 = Color3.new(1, 1, 1),
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -783,7 +784,7 @@ local Config = {
     AimEnabled = false,
     LockKey = Enum.KeyCode.Q,
     ShowLockScreenBtn = true,
-    MaxLockDistance = 180,
+    MaxLockDistance = 200,
     AimSmoothness = 1,
     AimPart = "Head",
     TeamCheck = true,
@@ -1008,7 +1009,7 @@ local function resolveAimTarget(myPos)
     end
 
     local now = os.clock()
-    if now - lastTargetScan >= 0.2 or not cachedTargetPart then
+    if now - lastTargetScan >= 0.15 or not cachedTargetPart then
         lastTargetScan = now
         local plr, part = findNearestEnemy(myPos)
         lockedPlayer = plr
@@ -1018,7 +1019,7 @@ local function resolveAimTarget(myPos)
     return cachedTargetPart
 end
 
-track(RunService.RenderStepped:Connect(function()
+RunService:BindToRenderStep("ZenxhubSDCamAim", Enum.RenderPriority.Camera.Value + 1, function()
     if not Config.AimEnabled then
         if lockedPlayer or cachedTargetPart then
             clearLockState()
@@ -1040,15 +1041,15 @@ track(RunService.RenderStepped:Connect(function()
     if not targetPart then return end
 
     local camPos = cam.CFrame.Position
-    local targetCF = CFrame.lookAt(camPos, targetPart.Position)
+    local aimCF = CFrame.lookAt(camPos, targetPart.Position)
     local smooth = math.max(1, Config.AimSmoothness)
     if smooth <= 1 then
-        cam.CFrame = targetCF
+        cam.CFrame = aimCF
     else
         local alpha = math.clamp(1 / (smooth * 0.5), 0.15, 1)
-        cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
+        cam.CFrame = cam.CFrame:Lerp(aimCF, alpha)
     end
-end))
+end)
 
 local function isGuiChainVisible(inst)
     local curr = inst
@@ -1508,7 +1509,7 @@ end)
 tAim:Keybind("Phím Bật/Tắt Lock (PC)", Enum.KeyCode.Q, function(keyCode)
     Config.LockKey = keyCode
 end)
-tAim:Slider("Giới Hạn Khoảng Cách", 20, 400, 180, " studs", function(v)
+tAim:Slider("Giới Hạn Khoảng Cách", 20, 400, 200, " studs", function(v)
     Config.MaxLockDistance = v
 end)
 tAim:Slider("Độ Mượt Lock (1 = Khóa Cứng)", 1, 20, 1, "", function(v)
