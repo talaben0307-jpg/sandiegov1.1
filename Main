@@ -39,7 +39,6 @@ local function onCleanup(fn)
 end
 
 env.ZenxhubSDCleanup = function()
-    pcall(function() RunService:UnbindFromRenderStep("ZenxhubSDCamlock") end)
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -217,6 +216,14 @@ local FloatGui = create("ScreenGui", {
     Parent = parentGui,
 })
 
+local LockBtnGui = create("ScreenGui", {
+    Name = "ZenxhubSDLockBtn",
+    ResetOnSpawn = false,
+    Enabled = false,
+    DisplayOrder = 102,
+    Parent = parentGui,
+})
+
 local EspGui = create("ScreenGui", {
     Name = "ZenxhubSDEsp",
     ResetOnSpawn = false,
@@ -228,6 +235,7 @@ local EspGui = create("ScreenGui", {
 onCleanup(function()
     MainGui:Destroy()
     FloatGui:Destroy()
+    LockBtnGui:Destroy()
     EspGui:Destroy()
 end)
 
@@ -286,7 +294,7 @@ local titleLabel = create("TextLabel", {
     Position = UDim2.new(0, 16, 0, 0),
     Size = UDim2.new(1, -90, 1, 0),
     Font = Enum.Font.GothamBold,
-    Text = "⚡ ZENXHUB | SAN DIEGO V1.8",
+    Text = "⚡ ZENXHUB | SAN DIEGO V1.9",
     TextSize = 14,
     TextColor3 = Color3.new(1, 1, 1),
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -330,6 +338,23 @@ local FloatBtn = create("TextButton", {
 }, { create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 addAccentStroke(FloatBtn, 2)
 local floatWasDragged = makeDraggable(FloatBtn, FloatBtn)
+
+local LockScreenBtn = create("TextButton", {
+    Parent = LockBtnGui,
+    BackgroundColor3 = Theme.Background,
+    BackgroundTransparency = 0.08,
+    Position = UDim2.new(0.85, -34, 0.45, -34),
+    Size = UDim2.new(0, 68, 0, 68),
+    Font = Enum.Font.GothamBold,
+    Text = "LOCK\nOFF",
+    TextSize = 12,
+    TextColor3 = Theme.Text,
+    AutoButtonColor = false,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+    stroke(Theme.Accent, 2, 0.1),
+})
+local lockBtnWasDragged = makeDraggable(LockScreenBtn, LockScreenBtn)
 
 local menuVisible = true
 local menuKey = Enum.KeyCode.Z
@@ -674,6 +699,63 @@ local function addTab(name, icon)
         header.MouseButton1Click:Connect(function() toggleOpen(not open) end)
     end
 
+    function api:Keybind(text, defaultKey, callback)
+        local f = create("Frame", {
+            Parent = page,
+            Size = UDim2.new(1, 0, 0, 36),
+            BackgroundColor3 = Theme.Element,
+            BackgroundTransparency = 0.25,
+        }, { corner(8), stroke(Theme.Stroke, 1, 0.3) })
+
+        create("TextLabel", {
+            Parent = f,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 0),
+            Size = UDim2.new(1, -130, 1, 0),
+            Font = Enum.Font.Gotham,
+            Text = text,
+            TextSize = 12,
+            TextColor3 = Theme.Text,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        })
+
+        local bindBtn = create("TextButton", {
+            Parent = f,
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -10, 0.5, 0),
+            Size = UDim2.new(0, 108, 0, 24),
+            BackgroundColor3 = Theme.Off,
+            Font = Enum.Font.GothamBold,
+            Text = defaultKey.Name,
+            TextSize = 11,
+            TextColor3 = Theme.Accent,
+            AutoButtonColor = false,
+        }, { corner(6) })
+
+        local currentKey = defaultKey
+        local listening = false
+
+        bindBtn.MouseButton1Click:Connect(function()
+            listening = true
+            bindBtn.Text = "..."
+            bindBtn.TextColor3 = Theme.Warn
+        end)
+
+        track(UserInputService.InputBegan:Connect(function(input, gp)
+            if listening and input.UserInputType == Enum.UserInputType.Keyboard then
+                listening = false
+                currentKey = input.KeyCode
+                bindBtn.Text = currentKey.Name
+                bindBtn.TextColor3 = Theme.Accent
+                if callback then task.spawn(pcall, callback, currentKey) end
+            end
+        end))
+
+        return {
+            GetKey = function() return currentKey end,
+        }
+    end
+
     function api:Button(text, callback)
         local b = create("TextButton", {
             Parent = page,
@@ -699,9 +781,9 @@ end
 
 local Config = {
     AimEnabled = false,
-    AimMode = "Always On",
-    ShowFOV = true,
-    FOVRadius = 140,
+    LockKey = Enum.KeyCode.Q,
+    ShowLockScreenBtn = true,
+    MaxLockDistance = 180,
     AimSmoothness = 1,
     AimPart = "Head",
     TeamCheck = true,
@@ -729,48 +811,50 @@ local Config = {
     AntiAFK = true,
 }
 
+local lockedPlayer = nil
+local aimToggleRef = nil
+
+local function refreshLockScreenBtnVisual()
+    LockBtnGui.Enabled = Config.ShowLockScreenBtn
+    if Config.AimEnabled then
+        LockScreenBtn.Text = "LOCK\nON"
+        LockScreenBtn.TextColor3 = Theme.Good
+        LockScreenBtn.BackgroundColor3 = Theme.PanelAlt
+    else
+        LockScreenBtn.Text = "LOCK\nOFF"
+        LockScreenBtn.TextColor3 = Theme.Text
+        LockScreenBtn.BackgroundColor3 = Theme.Background
+    end
+end
+
+local function setAimLock(state)
+    Config.AimEnabled = state
+    if not state then
+        lockedPlayer = nil
+    end
+    if aimToggleRef then
+        aimToggleRef.Set(state)
+    end
+    refreshLockScreenBtnVisual()
+end
+
+LockScreenBtn.MouseButton1Click:Connect(function()
+    if not lockBtnWasDragged() then
+        setAimLock(not Config.AimEnabled)
+    end
+end)
+
+track(UserInputService.InputBegan:Connect(function(input, gp)
+    if gp or UserInputService:GetFocusedTextBox() then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Config.LockKey then
+        setAimLock(not Config.AimEnabled)
+    end
+end))
+
 local function getHRP(model)
     if not model then return nil end
     return model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model:FindFirstChild("UpperTorso")
 end
-
-local fovCircle = nil
-local fovGuiRing = nil
-local hasDrawing = (Drawing ~= nil and Drawing.new ~= nil)
-
-if hasDrawing then
-    pcall(function()
-        fovCircle = Drawing.new("Circle")
-        fovCircle.Thickness = 1.5
-        fovCircle.NumSides = 64
-        fovCircle.Radius = Config.FOVRadius
-        fovCircle.Filled = false
-        fovCircle.Color = Theme.Accent
-        fovCircle.Transparency = 0.85
-        fovCircle.Visible = false
-    end)
-end
-
-if not fovCircle then
-    fovGuiRing = create("Frame", {
-        Parent = EspGui,
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = UDim2.fromOffset(Config.FOVRadius * 2, Config.FOVRadius * 2),
-        BackgroundTransparency = 1,
-        Visible = false,
-    }, {
-        create("UICorner", { CornerRadius = UDim.new(1, 0) }),
-        stroke(Theme.Accent, 1.5, 0.15),
-    })
-end
-
-onCleanup(function()
-    if fovCircle then
-        pcall(function() fovCircle:Remove() end)
-        fovCircle = nil
-    end
-end)
 
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -832,7 +916,7 @@ local function isPartVisible(targetPart, targetChar)
     local char = LocalPlayer.Character
     if not (cam and char) then return true end
 
-    local ignore = { char, targetChar, MainGui, FloatGui, EspGui }
+    local ignore = { char, targetChar, MainGui, FloatGui, LockBtnGui, EspGui }
     local hum = char:FindFirstChildOfClass("Humanoid")
     local seatPart = hum and hum.SeatPart
     if seatPart then
@@ -854,38 +938,44 @@ local function isPartVisible(targetPart, targetChar)
     local result = Workspace:Raycast(origin, dir, rayParams)
     if not result then return true end
     if result.Instance:IsDescendantOf(targetChar) then return true end
-    if result.Instance.Transparency >= 0.8 or not result.Instance.CanCollide then
+    if result.Instance.Transparency >= 0.85 or not result.Instance.CanCollide then
         return true
     end
     return false
 end
 
-local lockedPlayer = nil
+local function getValidLockedTargetPart(plr, myPos)
+    if not plr or plr == LocalPlayer or not plr.Parent then return nil end
+    if isSameTeam(plr) then return nil end
 
-local function getTargetPartFromPlayer(plr)
-    if not plr or plr == LocalPlayer or not plr.Parent then return nil, nil end
-    if isSameTeam(plr) then return nil, nil end
     local char = plr.Character
-    if not char or not char.Parent then return nil, nil end
+    if not char or not char.Parent then return nil end
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return nil, nil end
+    if not hum or hum.Health <= 0 then return nil end
+
     local part = char:FindFirstChild(Config.AimPart)
         or char:FindFirstChild("Head")
         or getHRP(char)
-    if not (part and part:IsA("BasePart")) then return nil, nil end
-    return part, char
+    if not (part and part:IsA("BasePart")) then return nil end
+
+    local dist = (part.Position - myPos).Magnitude
+    if dist > Config.MaxLockDistance then return nil end
+
+    if not isPartVisible(part, char) then return nil end
+
+    return part
 end
 
-local function findNearestDifferentTeamPlayer(myPos)
+local function pickNearestEnemy(myPos)
     local bestPlr = nil
     local bestPart = nil
-    local bestDist = math.huge
+    local bestDist = Config.MaxLockDistance
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        local part, char = getTargetPartFromPlayer(plr)
-        if part and char then
+        local part = getValidLockedTargetPart(plr, myPos)
+        if part then
             local dist = (part.Position - myPos).Magnitude
-            if dist < bestDist and isPartVisible(part, char) then
+            if dist <= bestDist then
                 bestDist = dist
                 bestPlr = plr
                 bestPart = part
@@ -893,101 +983,53 @@ local function findNearestDifferentTeamPlayer(myPos)
         end
     end
 
-    if not bestPlr then
-        for _, plr in ipairs(Players:GetPlayers()) do
-            local part, char = getTargetPartFromPlayer(plr)
-            if part and char then
-                local dist = (part.Position - myPos).Magnitude
-                if dist < bestDist then
-                    bestDist = dist
-                    bestPlr = plr
-                    bestPart = part
-                end
-            end
-        end
-    end
-
     return bestPlr, bestPart
 end
 
-local function getLockedTarget(cam)
-    local myChar = LocalPlayer.Character
-    local myHrp = getHRP(myChar)
-    local myPos = myHrp and myHrp.Position or cam.CFrame.Position
-
-    if lockedPlayer then
-        local part, char = getTargetPartFromPlayer(lockedPlayer)
-        if part and char then
-            return part
-        else
-            lockedPlayer = nil
-        end
-    end
-
-    local plr, part = findNearestDifferentTeamPlayer(myPos)
-    if plr and part then
-        lockedPlayer = plr
-        return part
-    end
-
-    return nil
-end
-
-local function lockCameraHard(cam, targetPart)
-    local camPos = cam.CFrame.Position
-    local targetCF = CFrame.lookAt(camPos, targetPart.Position)
-    local smooth = math.max(1, Config.AimSmoothness)
-    if smooth <= 1 then
-        cam.CFrame = targetCF
-    else
-        local alpha = math.clamp(1 / (smooth * 0.45), 0.15, 1)
-        cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
-    end
-end
-
-RunService:BindToRenderStep("ZenxhubSDCamlock", Enum.RenderPriority.Camera.Value + 1, function()
-    local cam = Workspace.CurrentCamera
-    if not cam then return end
-
-    local vp = cam.ViewportSize
-    local centerPos = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
-    local showRing = Config.AimEnabled and Config.ShowFOV
-
-    if fovCircle then
-        fovCircle.Position = centerPos
-        fovCircle.Radius = Config.FOVRadius
-        fovCircle.Visible = showRing
-    elseif fovGuiRing then
-        fovGuiRing.Position = UDim2.fromOffset(centerPos.X, centerPos.Y)
-        fovGuiRing.Size = UDim2.fromOffset(Config.FOVRadius * 2, Config.FOVRadius * 2)
-        fovGuiRing.Visible = showRing
-    end
-
+track(RunService.RenderStepped:Connect(function()
     if not Config.AimEnabled then
         lockedPlayer = nil
         return
     end
     if UserInputService:GetFocusedTextBox() then return end
 
-    local activeAim = false
-    if Config.AimMode == "Always On" then
-        activeAim = true
-    elseif Config.AimMode == "Hold RMB" then
-        activeAim = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
-            or (UserInputService.TouchEnabled and #UserInputService:GetTouches() > 0)
-    elseif Config.AimMode == "Hold E" then
-        activeAim = UserInputService:IsKeyDown(Enum.KeyCode.E)
-    end
-
-    if not activeAim then
+    local cam = Workspace.CurrentCamera
+    local char = LocalPlayer.Character
+    local myHrp = getHRP(char)
+    if not (cam and myHrp) then
+        lockedPlayer = nil
         return
     end
 
-    local targetPart = getLockedTarget(cam)
-    if targetPart then
-        lockCameraHard(cam, targetPart)
+    local myPos = myHrp.Position
+    local targetPart = nil
+
+    if lockedPlayer then
+        targetPart = getValidLockedTargetPart(lockedPlayer, myPos)
+        if not targetPart then
+            lockedPlayer = nil
+        end
     end
-end)
+
+    if not targetPart then
+        local plr, part = pickNearestEnemy(myPos)
+        if plr and part then
+            lockedPlayer = plr
+            targetPart = part
+        end
+    end
+
+    if targetPart then
+        local targetCF = CFrame.lookAt(cam.CFrame.Position, targetPart.Position)
+        local smooth = math.max(1, Config.AimSmoothness)
+        if smooth <= 1 then
+            cam.CFrame = targetCF
+        else
+            local alpha = math.clamp(1 / (smooth * 0.45), 0.15, 1)
+            cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
+        end
+    end
+end))
 
 local function isGuiChainVisible(inst)
     local curr = inst
@@ -1428,28 +1470,41 @@ track(LocalPlayer.Idled:Connect(function()
     end
 end))
 
-local tAim = addTab("Aimbot & FOV", "🎯")
+local tAim = addTab("Aimbot Lock", "🎯")
 local tEsp = addTab("Định Vị ESP", "👁️")
 local tJob = addTab("Công Việc", "💼")
 local tCar = addTab("Xe & Di Chuyển", "🏎️")
 local tMisc = addTab("Tiện Ích", "⚙️")
 
-tAim:Section("Aimbot & Vòng Tròn FOV")
-tAim:Toggle("Bật Aimbot", false, function(v)
+tAim:Section("Khóa Mục Tiêu (Lock)")
+aimToggleRef = tAim:Toggle("Bật Lock Mục Tiêu", false, function(v)
     Config.AimEnabled = v
     if not v then lockedPlayer = nil end
+    refreshLockScreenBtnVisual()
 end)
-tAim:Dropdown("Chế Độ Kích Hoạt", { "Always On", "Hold RMB", "Hold E" }, "Always On", function(v)
-    Config.AimMode = v
+tAim:Toggle("Nút Lock Trên Màn Hình", true, function(v)
+    Config.ShowLockScreenBtn = v
+    refreshLockScreenBtnVisual()
 end)
-tAim:Toggle("Hiện Vòng Tròn FOV", true, function(v) Config.ShowFOV = v end)
-tAim:Slider("Bán Kính FOV", 30, 400, 140, " px", function(v) Config.FOVRadius = v end)
-tAim:Slider("Độ Mượt Aim (1 = Khóa Cứng)", 1, 20, 1, "", function(v) Config.AimSmoothness = v end)
+tAim:Keybind("Phím Bật/Tắt Lock (PC)", Enum.KeyCode.Q, function(keyCode)
+    Config.LockKey = keyCode
+end)
+tAim:Slider("Giới Hạn Khoảng Cách", 20, 400, 180, " studs", function(v)
+    Config.MaxLockDistance = v
+end)
+tAim:Slider("Độ Mượt Lock (1 = Khóa Cứng)", 1, 20, 1, "", function(v)
+    Config.AimSmoothness = v
+end)
 tAim:Dropdown("Bộ Phận Ngắm", { "Head", "HumanoidRootPart" }, "Head", function(v)
     Config.AimPart = v
 end)
-tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", true, function(v) Config.TeamCheck = v end)
-tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", true, function(v) Config.WallCheck = v end)
+tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", true, function(v)
+    Config.TeamCheck = v
+    lockedPlayer = nil
+end)
+tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", true, function(v)
+    Config.WallCheck = v
+end)
 
 tEsp:Section("Người Chơi & Phe Phái")
 tEsp:Toggle("Bật ESP Người Chơi", false, function(v) Config.PlayerESP = v end)
@@ -1492,3 +1547,5 @@ tMisc:Toggle("Chống Văng AFK 20 Phút", true, function(v) Config.AntiAFK = v 
 tMisc:Button("🚪 Đóng & Gỡ Script", function()
     if env.ZenxhubSDCleanup then env.ZenxhubSDCleanup() end
 end)
+
+refreshLockScreenBtnVisual()
