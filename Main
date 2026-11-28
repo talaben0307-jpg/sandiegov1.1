@@ -40,6 +40,7 @@ local function onCleanup(fn)
 end
 
 env.ZenxhubSDCleanup = function()
+	pcall(function() RunService:UnbindFromRenderStep("ZenxhubSDCamAim") end)
 	for _, c in ipairs(connections) do
 		pcall(function() c:Disconnect() end)
 	end
@@ -295,7 +296,7 @@ local titleLabel = create("TextLabel", {
 	Position = UDim2.new(0, 16, 0, 0),
 	Size = UDim2.new(1, -90, 1, 0),
 	Font = Enum.Font.GothamBold,
-	Text = "⚡ ZENXHUB | SAN DIEGO V1.17",
+	Text = "⚡ ZENXHUB | SAN DIEGO V1.18",
 	TextSize = 14,
 	TextColor3 = Color3.new(1, 1, 1),
 	TextXAlignment = Enum.TextXAlignment.Left,
@@ -795,9 +796,9 @@ local Config = {
 	UseFov = true,
 	ShowFovCircle = true,
 	FovRadius = 150,
-	MaxLockDistance = 220,
-	AimSmoothness = 0.35,
-	AimPart = "HumanoidRootPart",
+	MaxLockDistance = 250,
+	AimPart = "Head",
+	AimPrediction = 0.04,
 	TeamCheck = true,
 	WallCheck = true,
 	PlayerESP = false,
@@ -853,7 +854,8 @@ onCleanup(function()
 	FovGui:Destroy()
 end)
 
-local targetPart, targetHum, targetMarker = nil, nil, nil
+local lockedPlayer = nil
+local targetMarker = nil
 local aimToggleRef = nil
 
 local function getHRP(model)
@@ -868,21 +870,6 @@ local function destroyMarker()
 	end
 end
 
-local function resetCamera()
-	local cam = Workspace.CurrentCamera
-	if not cam then return end
-	cam.CameraType = Enum.CameraType.Custom
-	local char = LocalPlayer.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if hum then cam.CameraSubject = hum end
-end
-
-local function clearTargetOnly()
-	targetPart, targetHum = nil, nil
-	destroyMarker()
-	resetCamera()
-end
-
 local function createMarker(model)
 	destroyMarker()
 	local m = Instance.new("BillboardGui")
@@ -890,8 +877,8 @@ local function createMarker(model)
 	m.Adornee = model
 	m.AlwaysOnTop = true
 	m.Enabled = true
-	m.Size = UDim2.fromOffset(90, 90)
-	m.StudsOffsetWorldSpace = Vector3.new(0, 0.2, 0)
+	m.Size = UDim2.fromOffset(80, 80)
+	m.StudsOffsetWorldSpace = Vector3.new(0, 0.4, 0)
 	m.MaxDistance = Config.MaxLockDistance
 	m.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	m.Parent = parentGui
@@ -899,7 +886,7 @@ local function createMarker(model)
 		Parent = m,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(22, 22),
+		Size = UDim2.fromOffset(20, 20),
 		BackgroundTransparency = 1,
 	}, {
 		create("UICorner", { CornerRadius = UDim.new(1, 0) }),
@@ -908,96 +895,208 @@ local function createMarker(model)
 	targetMarker = m
 end
 
-local function getPlayerTeamKey(plr)
-	if plr.Team then
-		return tostring(plr.Team)
-	end
-	if plr.TeamColor then
-		return tostring(plr.TeamColor)
-	end
+local function getOverheadRoleInfo(plr)
+	local texts = {}
+	local textCol = nil
 	if plr.Character then
-		for attr, val in pairs(plr.Character:GetAttributes()) do
-			local la = string.lower(attr)
-			if (la:find("team") or la:find("role") or la:find("job") or la:find("faction")) and val ~= nil and tostring(val) ~= "" then
-				return tostring(val)
+		for _, obj in ipairs(plr.Character:GetDescendants()) do
+			if obj:IsA("TextLabel") and obj.Visible and obj.Text ~= "" then
+				local low = string.lower(obj.Text)
+				if low ~= string.lower(plr.Name) and low ~= string.lower(plr.DisplayName) then
+					table.insert(texts, low)
+					textCol = obj.TextColor3
+				end
 			end
 		end
 	end
-	for attr, val in pairs(plr:GetAttributes()) do
-		local la = string.lower(attr)
-		if (la:find("team") or la:find("role") or la:find("job") or la:find("faction")) and val ~= nil and tostring(val) ~= "" then
-			return tostring(val)
+	return table.concat(texts, " "), textCol
+end
+
+local function getPlayerFactionAndRole(plr)
+	local parts = {}
+	if plr.Team and plr.Team.Name then
+		table.insert(parts, string.lower(plr.Team.Name))
+	end
+	for _, container in ipairs({ plr, plr.Character }) do
+		if container then
+			for attr, val in pairs(container:GetAttributes()) do
+				local la = string.lower(attr)
+				if (la:find("team") or la:find("role") or la:find("job") or la:find("faction") or la:find("dept") or la:find("rank")) and val ~= nil and tostring(val) ~= "" then
+					table.insert(parts, string.lower(tostring(val)))
+				end
+			end
 		end
 	end
-	return nil
+	local ls = plr:FindFirstChild("leaderstats")
+	if ls then
+		for _, v in ipairs(ls:GetChildren()) do
+			local ln = string.lower(v.Name)
+			if (ln:find("team") or ln:find("role") or ln:find("job") or ln:find("faction")) and v:IsA("StringValue") and v.Value ~= "" then
+				table.insert(parts, string.lower(v.Value))
+			end
+		end
+	end
+
+	local ohText, ohCol = getOverheadRoleInfo(plr)
+	if ohText ~= "" then
+		table.insert(parts, ohText)
+	end
+
+	local combined = table.concat(parts, " | ")
+
+	local policeKeywords = {
+		"police", "sheriff", "swat", "fbi", "dea", "marshal", "trooper", "officer",
+		"cop", "law", "patrol", "detective", "warden", "corrections", "cadets", "cadet",
+		"chp", "lapd", "sdpd", "state police", "cảnh sát", "công an"
+	}
+	for _, kw in ipairs(policeKeywords) do
+		if combined:find(kw, 1, true) then
+			return "POLICE", (plr.Team and plr.Team.Name or "Police")
+		end
+	end
+
+	if plr.Character then
+		for _, item in ipairs(plr.Character:GetChildren()) do
+			if item:IsA("Tool") or item:IsA("Accessory") then
+				local iname = string.lower(item.Name)
+				if iname:find("handcuff") or iname:find("taser") or iname:find("baton") or iname:find("police") or iname:find("sheriff") or iname:find("badge") or iname:find("swat") then
+					return "POLICE", "Police"
+				end
+			end
+		end
+		local bp = plr:FindFirstChild("Backpack")
+		if bp then
+			for _, item in ipairs(bp:GetChildren()) do
+				if item:IsA("Tool") then
+					local iname = string.lower(item.Name)
+					if iname:find("handcuff") or iname:find("taser") or iname:find("baton") or iname:find("radar") then
+						return "POLICE", "Police"
+					end
+				end
+			end
+		end
+	end
+
+	if ohCol and ohCol.B > 0.65 and ohCol.R < 0.45 then
+		return "POLICE", "Police"
+	end
+	if plr.TeamColor then
+		local tc = plr.TeamColor.Color
+		if tc.B > 0.65 and tc.R < 0.45 then
+			return "POLICE", (plr.Team and plr.Team.Name or "Police")
+		end
+	end
+
+	local crimKeywords = {
+		"criminal", "smuggler", "outlaw", "robber", "thief", "gang", "mafia",
+		"inmate", "prisoner", "cartel", "bandit", "felon", "wanted", "tội phạm", "cướp"
+	}
+	for _, kw in ipairs(crimKeywords) do
+		if combined:find(kw, 1, true) then
+			return "CRIMINAL", (plr.Team and plr.Team.Name or "Criminal")
+		end
+	end
+
+	if ohCol and ohCol.R > 0.65 and ohCol.B < 0.45 then
+		return "CRIMINAL", "Criminal"
+	end
+	if plr.TeamColor then
+		local tc = plr.TeamColor.Color
+		if tc.R > 0.65 and tc.B < 0.45 then
+			return "CRIMINAL", (plr.Team and plr.Team.Name or "Criminal")
+		end
+	end
+
+	return "CIVILIAN", (plr.Team and plr.Team.Name or "Civilian")
 end
 
 local function isSameTeam(plr)
 	if not Config.TeamCheck then return false end
 	if plr == LocalPlayer then return true end
-	if LocalPlayer.Team and plr.Team then
-		return LocalPlayer.Team == plr.Team
+	if LocalPlayer.Team and plr.Team and LocalPlayer.Team == plr.Team then
+		return true
 	end
-	local myKey = getPlayerTeamKey(LocalPlayer)
-	local theirKey = getPlayerTeamKey(plr)
-	if myKey and theirKey then
-		return string.lower(myKey) == string.lower(theirKey)
+	local myFaction = select(1, getPlayerFactionAndRole(LocalPlayer))
+	local theirFaction = select(1, getPlayerFactionAndRole(plr))
+	if myFaction == "POLICE" and theirFaction == "POLICE" then
+		return true
 	end
-	if LocalPlayer.TeamColor and plr.TeamColor and LocalPlayer.TeamColor ~= BrickColor.White() then
-		return LocalPlayer.TeamColor == plr.TeamColor
+	if myFaction == "CRIMINAL" and theirFaction == "CRIMINAL" then
+		return true
 	end
 	return false
 end
 
 local function isSuspectOrWanted(plr)
-	if not plr or plr == LocalPlayer then return false, "Suspect" end
-	local reason = nil
-
-	local teamKey = string.lower(getPlayerTeamKey(plr) or "")
-	if teamKey:find("criminal") or teamKey:find("smuggler") or teamKey:find("outlaw") or teamKey:find("robber") or teamKey:find("gang") or teamKey:find("wanted") or teamKey:find("inmate") then
-		reason = getPlayerTeamKey(plr)
+	if not plr or plr == LocalPlayer then return false, "" end
+	local faction, roleLabel = getPlayerFactionAndRole(plr)
+	if faction == "POLICE" then
+		return false, "Police"
 	end
 
+	local wantedStars = 0
 	for _, container in ipairs({ plr, plr.Character }) do
 		if container then
 			for attr, val in pairs(container:GetAttributes()) do
 				local la = string.lower(attr)
-				if (la:find("wanted") or la:find("star") or la:find("bounty") or la:find("crime")) then
-					if (type(val) == "number" and val > 0) or val == true then
-						reason = "Wanted" .. (type(val) == "number" and (" ★" .. tostring(val)) or "")
+				if la == "wanted" or la == "wantedlevel" or la == "stars" or la == "star" or la == "bounty" then
+					if type(val) == "number" and val > 0 then
+						wantedStars = math.max(wantedStars, math.floor(val))
+					elseif val == true then
+						wantedStars = math.max(wantedStars, 1)
 					end
 				end
 			end
-			for _, desc in ipairs(container:GetDescendants()) do
+			for _, desc in ipairs(container:GetChildren()) do
 				if desc:IsA("IntValue") or desc:IsA("NumberValue") or desc:IsA("BoolValue") then
 					local ln = string.lower(desc.Name)
-					if ln:find("wanted") or ln:find("star") or ln:find("bounty") then
-						if (type(desc.Value) == "number" and desc.Value > 0) or desc.Value == true then
-							reason = "Wanted" .. (type(desc.Value) == "number" and (" ★" .. tostring(desc.Value)) or "")
+					if ln == "wanted" or ln == "wantedlevel" or ln == "stars" or ln == "star" or ln == "bounty" then
+						if type(desc.Value) == "number" and desc.Value > 0 then
+							wantedStars = math.max(wantedStars, math.floor(desc.Value))
+						elseif desc.Value == true then
+							wantedStars = math.max(wantedStars, 1)
 						end
 					end
 				end
 			end
-		end
-	end
-
-	if not reason and plr.Character then
-		local equipped = plr.Character:FindFirstChildWhichIsA("Tool")
-		if equipped then
-			local tn = string.lower(equipped.Name)
-			if tn:find("gun") or tn:find("pistol") or tn:find("rifle") or tn:find("ak") or tn:find("ar") or tn:find("smg") or tn:find("shotgun") or tn:find("glock") or tn:find("knife") or tn:find("crowbar") or tn:find("bag") or tn:find("drill") then
-				reason = "Armed (" .. equipped.Name .. ")"
+			local ls = container:FindFirstChild("leaderstats")
+			if ls then
+				for _, stat in ipairs(ls:GetChildren()) do
+					local ln = string.lower(stat.Name)
+					if (ln == "wanted" or ln == "stars" or ln == "bounty") and (stat:IsA("IntValue") or stat:IsA("NumberValue")) and stat.Value > 0 then
+						wantedStars = math.max(wantedStars, math.floor(stat.Value))
+					end
+				end
 			end
 		end
 	end
 
-	if reason then
-		return true, reason
+	if wantedStars > 0 then
+		return true, string.format("Wanted ★%d", wantedStars)
 	end
-	if not isSameTeam(plr) then
-		return false, getPlayerTeamKey(plr) or "Civilian"
+
+	if faction == "CRIMINAL" then
+		return true, roleLabel
 	end
-	return false, "Ally"
+
+	if plr.Character then
+		local equipped = plr.Character:FindFirstChildWhichIsA("Tool")
+		if equipped then
+			local tn = string.lower(equipped.Name)
+			local weaponWords = {
+				"glock", "deagle", "pistol", "revolver", "ak47", "ak-47", "ar15", "ar-15",
+				"m4", "mp5", "uzi", "mac", "shotgun", "remington", "sniper", "rifle",
+				"smg", "draco", "tec", "knife", "machete", "crowbar", "drill", "c4", "bomb", "bag"
+			}
+			for _, ww in ipairs(weaponWords) do
+				if tn:find(ww, 1, true) then
+					return true, "Armed: " .. equipped.Name
+				end
+			end
+		end
+	end
+
+	return false, roleLabel
 end
 
 local rayParams = RaycastParams.new()
@@ -1037,51 +1136,54 @@ local function getAimPart(model)
 	if Config.AimPart == "Head" then
 		return model:FindFirstChild("Head") or getHRP(model) or model.PrimaryPart
 	end
-	return getHRP(model) or model.PrimaryPart or model:FindFirstChild("Head")
+	return model:FindFirstChild("UpperTorso") or getHRP(model) or model.PrimaryPart or model:FindFirstChild("Head")
 end
 
-local function getValidTargetPart(model)
-	if not (model and model.Parent and model:IsA("Model")) or model == LocalPlayer.Character then
-		return nil, nil
+local function isPlayerTargetable(plr, myPos, checkWall)
+	if not plr or plr == LocalPlayer or not plr.Parent then return nil end
+	if isSameTeam(plr) then return nil end
+
+	local char = plr.Character
+	if not char or not char.Parent then return nil end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return nil end
+
+	local part = getAimPart(char)
+	if not (part and part:IsA("BasePart")) then return nil end
+
+	if (part.Position - myPos).Magnitude > Config.MaxLockDistance then
+		return nil
 	end
-	local plr = Players:GetPlayerFromCharacter(model)
-	if not plr or plr == LocalPlayer or isSameTeam(plr) then
-		return nil, nil
+
+	if checkWall and not isPartVisible(part, char) then
+		return nil
 	end
-	local hum = model:FindFirstChildOfClass("Humanoid")
-	if not hum or hum.Health <= 0 then return nil, nil end
-	local part = getAimPart(model)
-	if part and part:IsA("BasePart") then
-		return part, hum
-	end
-	return nil, nil
+
+	return part
 end
 
-local function findBestTarget()
+local function findBestTargetInFov()
 	local char = LocalPlayer.Character
 	local hrp = getHRP(char)
 	local cam = Workspace.CurrentCamera
-	if not (hrp and cam) then return nil, nil end
+	if not (hrp and cam) then return nil end
 
 	local vp = cam.ViewportSize
 	local center = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
-	local bestPart, bestHum, bestScore = nil, nil, math.huge
+	local bestPlr, bestScore = nil, math.huge
 
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p ~= LocalPlayer and p.Character then
-			local part, hum = getValidTargetPart(p.Character)
+			local part = isPlayerTargetable(p, hrp.Position, true)
 			if part then
-				local worldDist = (part.Position - hrp.Position).Magnitude
-				if worldDist <= Config.MaxLockDistance then
-					local sp, onScreen = cam:WorldToViewportPoint(part.Position)
-					if onScreen and sp.Z > 0 then
-						local screenDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-						if (not Config.UseFov or screenDist <= Config.FovRadius) and isPartVisible(part, p.Character) then
-							local score = Config.UseFov and screenDist or worldDist
-							if score < bestScore then
-								bestScore = score
-								bestPart, bestHum = part, hum
-							end
+				local sp, onScreen = cam:WorldToViewportPoint(part.Position)
+				if onScreen and sp.Z > 0 then
+					local screenDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+					if not Config.UseFov or screenDist <= Config.FovRadius then
+						local score = Config.UseFov and screenDist or (part.Position - hrp.Position).Magnitude
+						if score < bestScore then
+							bestScore = score
+							bestPlr = p
 						end
 					end
 				end
@@ -1089,7 +1191,12 @@ local function findBestTarget()
 		end
 	end
 
-	return bestPart, bestHum
+	return bestPlr
+end
+
+local function clearTargetOnly()
+	lockedPlayer = nil
+	destroyMarker()
 end
 
 local function refreshLockScreenBtnVisual()
@@ -1108,10 +1215,10 @@ end
 local function setAimLock(state, fromToggle)
 	Config.AimEnabled = state and true or false
 	if Config.AimEnabled then
-		local part, hum = findBestTarget()
-		if part and hum then
-			targetPart, targetHum = part, hum
-			createMarker(part.Parent)
+		local best = findBestTargetInFov()
+		if best and best.Character then
+			lockedPlayer = best
+			createMarker(best.Character)
 		end
 	else
 		clearTargetOnly()
@@ -1136,69 +1243,67 @@ track(UserInputService.InputBegan:Connect(function(input, gp)
 end))
 
 local lastScan = 0
-track(RunService.RenderStepped:Connect(function()
+RunService:BindToRenderStep("ZenxhubSDCamAim", Enum.RenderPriority.Camera.Value + 1, function()
 	FovCircle.Size = UDim2.fromOffset(Config.FovRadius * 2, Config.FovRadius * 2)
 	FovCircle.Visible = Config.AimEnabled and Config.UseFov and Config.ShowFovCircle
 
 	if not Config.AimEnabled then
-		if targetPart then clearTargetOnly() end
+		if lockedPlayer then clearTargetOnly() end
 		return
 	end
+	if UserInputService:GetFocusedTextBox() then return end
 
-	local char = LocalPlayer.Character
-	local hrp = getHRP(char)
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	local cam = Workspace.CurrentCamera
-	if not (hrp and hum and hum.Health > 0 and cam) then
-		if targetPart then clearTargetOnly() end
+	local char = LocalPlayer.Character
+	local myHrp = getHRP(char)
+	local myHum = char and char:FindFirstChildOfClass("Humanoid")
+	if not (cam and myHrp and myHum and myHum.Health > 0) then
+		if lockedPlayer then clearTargetOnly() end
 		return
 	end
 
-	if targetPart then
-		local valid = targetPart.Parent and targetHum and targetHum.Health > 0
-		if valid then
-			local plr = Players:GetPlayerFromCharacter(targetPart.Parent)
-			if not plr or isSameTeam(plr) then
-				valid = false
-			elseif (targetPart.Position - hrp.Position).Magnitude > Config.MaxLockDistance then
-				valid = false
-			end
-		end
-		if not valid then
+	if cam.CameraType ~= Enum.CameraType.Custom then
+		cam.CameraType = Enum.CameraType.Custom
+	end
+
+	local targetPart = nil
+	if lockedPlayer then
+		targetPart = isPlayerTargetable(lockedPlayer, myHrp.Position, false)
+		if not targetPart then
 			clearTargetOnly()
 		end
 	end
 
 	if not targetPart then
 		local now = os.clock()
-		if now - lastScan >= 0.15 then
+		if now - lastScan >= 0.12 then
 			lastScan = now
-			local part, tHum = findBestTarget()
-			if part and tHum then
-				targetPart, targetHum = part, tHum
-				createMarker(part.Parent)
+			local best = findBestTargetInFov()
+			if best and best.Character then
+				lockedPlayer = best
+				createMarker(best.Character)
+				targetPart = isPlayerTargetable(best, myHrp.Position, false)
 			end
 		end
-		return
 	end
 
-	local dist = (targetPart.Position - hrp.Position).Magnitude
-	if targetMarker then
-		local sz = math.clamp(140 - dist * 0.14, 70, 140)
-		targetMarker.Size = UDim2.fromOffset(sz, sz)
+	if not targetPart then return end
+
+	if targetMarker and lockedPlayer and lockedPlayer.Character and targetMarker.Adornee ~= lockedPlayer.Character then
+		targetMarker.Adornee = lockedPlayer.Character
 	end
 
-	local lookPos = Vector3.new(targetPart.Position.X, hrp.Position.Y, targetPart.Position.Z)
-	if (lookPos - hrp.Position).Magnitude > 0.05 then
-		hrp.CFrame = CFrame.lookAt(hrp.Position, lookPos)
+	local vel = targetPart.AssemblyLinearVelocity
+	local predictedPos = targetPart.Position + vel * Config.AimPrediction
+	if targetPart.Name == "Head" then
+		predictedPos = predictedPos - Vector3.new(0, 0.1, 0)
 	end
 
-	cam.CameraType = Enum.CameraType.Scriptable
-	local desired = hrp.CFrame:ToWorldSpace(CFrame.new(0, 6, 12))
-	local targetCF = CFrame.lookAt(desired.Position, targetPart.Position)
-	local alpha = math.clamp(Config.AimSmoothness, 0.05, 1)
-	cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
-end))
+	local camPos = cam.CFrame.Position
+	if (predictedPos - camPos).Magnitude > 0.1 then
+		cam.CFrame = CFrame.lookAt(camPos, predictedPos)
+	end
+end)
 
 local function onCharacter(char)
 	clearTargetOnly()
@@ -1214,7 +1319,6 @@ track(LocalPlayer.CharacterAdded:Connect(function(char) task.spawn(onCharacter, 
 
 onCleanup(function()
 	pcall(destroyMarker)
-	pcall(resetCamera)
 end)
 
 local function findNearestSuspect(maxRange, preferWanted)
@@ -1280,7 +1384,10 @@ task.spawn(function()
 		if Config.AutoCuff then
 			local char = LocalPlayer.Character
 			local myHrp = getHRP(char)
-			local targetPlr, targetHrp = findNearestSuspect(Config.CuffRange, false)
+			local targetPlr, targetHrp = findNearestSuspect(Config.CuffRange, true)
+			if not targetPlr then
+				targetPlr, targetHrp = findNearestSuspect(Config.CuffRange, false)
+			end
 			if myHrp and targetPlr and targetHrp then
 				local cuffTool = equipToolByKeywords({ "cuff", "handcuff", "arrest", "detain", "zip" })
 				if cuffTool then
@@ -1321,9 +1428,6 @@ task.spawn(function()
 			local char = LocalPlayer.Character
 			local myHrp = getHRP(char)
 			local targetPlr, targetHrp = findNearestSuspect(Config.TaserRange, true)
-			if not targetPlr then
-				targetPlr, targetHrp = findNearestSuspect(Config.TaserRange, false)
-			end
 			if myHrp and targetPlr and targetHrp then
 				local taserTool = equipToolByKeywords({ "taser", "stun", "x26", "zeus" })
 				if taserTool then
@@ -1567,9 +1671,9 @@ task.spawn(function()
 					local hum = plr.Character:FindFirstChildOfClass("Humanoid")
 					if hrp and hum and hum.Health > 0 then
 						local dist = math.floor((hrp.Position - myHrp.Position).Magnitude)
-						local teamName = plr.Team and plr.Team.Name or (getPlayerTeamKey(plr) or "Civilian")
+						local _, roleLabel = getPlayerFactionAndRole(plr)
 						local color = (Config.ShowTeamColor and plr.Team) and plr.TeamColor.Color or Theme.Accent
-						local label = string.format("%s [%s]\nHP: %d | %dm", plr.DisplayName, teamName, math.floor(hum.Health), dist)
+						local label = string.format("%s [%s]\nHP: %d | %dm", plr.DisplayName, roleLabel, math.floor(hum.Health), dist)
 						makeEspTag(hrp, "PlayerESP", label, color)
 					end
 				end
@@ -1844,7 +1948,7 @@ local tJob = addTab("Công Việc", "💼")
 local tCar = addTab("Xe & Di Chuyển", "🏎️")
 local tMisc = addTab("Tiện Ích", "⚙️")
 
-tAim:Section("Khóa Mục Tiêu (CPZ Camlock + FOV)")
+tAim:Section("Khóa Mục Tiêu (Camlock + FOV)")
 aimToggleRef = tAim:Toggle("Bật Lock Mục Tiêu", false, function(v)
 	setAimLock(v, true)
 end)
@@ -1864,13 +1968,13 @@ end)
 tAim:Slider("Bán Kính FOV", 40, 400, 150, " px", function(v)
 	Config.FovRadius = v
 end)
-tAim:Slider("Giới Hạn Khoảng Cách", 20, 500, 220, " studs", function(v)
+tAim:Slider("Giới Hạn Khoảng Cách", 20, 500, 250, " studs", function(v)
 	Config.MaxLockDistance = v
 end)
-tAim:Slider("Độ Mượt Camlock (x0.05)", 1, 20, 7, "", function(v)
-	Config.AimSmoothness = math.clamp(v * 0.05, 0.05, 1)
+tAim:Slider("Độ Bù Chuyển Động (x0.01)", 0, 20, 4, "", function(v)
+	Config.AimPrediction = v * 0.01
 end)
-tAim:Dropdown("Bộ Phận Ngắm", { "HumanoidRootPart", "Head" }, "HumanoidRootPart", function(v)
+tAim:Dropdown("Bộ Phận Ngắm", { "Head", "UpperTorso" }, "Head", function(v)
 	Config.AimPart = v
 end)
 tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", true, function(v)
