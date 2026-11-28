@@ -295,7 +295,7 @@ local titleLabel = create("TextLabel", {
 	Position = UDim2.new(0, 16, 0, 0),
 	Size = UDim2.new(1, -90, 1, 0),
 	Font = Enum.Font.GothamBold,
-	Text = "⚡ ZENXHUB | SAN DIEGO V1.16",
+	Text = "⚡ ZENXHUB | SAN DIEGO V1.17",
 	TextSize = 14,
 	TextColor3 = Color3.new(1, 1, 1),
 	TextXAlignment = Enum.TextXAlignment.Left,
@@ -803,6 +803,12 @@ local Config = {
 	PlayerESP = false,
 	ShowTeamColor = true,
 	ItemCashESP = false,
+	WantedESP = false,
+	AutoCuff = false,
+	CuffRange = 12,
+	AutoTaser = false,
+	TaserRange = 35,
+	PoliceNoStun = false,
 	AutoInteractJobs = false,
 	InteractRange = 25,
 	InstantPrompt = false,
@@ -941,6 +947,57 @@ local function isSameTeam(plr)
 		return LocalPlayer.TeamColor == plr.TeamColor
 	end
 	return false
+end
+
+local function isSuspectOrWanted(plr)
+	if not plr or plr == LocalPlayer then return false, "Suspect" end
+	local reason = nil
+
+	local teamKey = string.lower(getPlayerTeamKey(plr) or "")
+	if teamKey:find("criminal") or teamKey:find("smuggler") or teamKey:find("outlaw") or teamKey:find("robber") or teamKey:find("gang") or teamKey:find("wanted") or teamKey:find("inmate") then
+		reason = getPlayerTeamKey(plr)
+	end
+
+	for _, container in ipairs({ plr, plr.Character }) do
+		if container then
+			for attr, val in pairs(container:GetAttributes()) do
+				local la = string.lower(attr)
+				if (la:find("wanted") or la:find("star") or la:find("bounty") or la:find("crime")) then
+					if (type(val) == "number" and val > 0) or val == true then
+						reason = "Wanted" .. (type(val) == "number" and (" ★" .. tostring(val)) or "")
+					end
+				end
+			end
+			for _, desc in ipairs(container:GetDescendants()) do
+				if desc:IsA("IntValue") or desc:IsA("NumberValue") or desc:IsA("BoolValue") then
+					local ln = string.lower(desc.Name)
+					if ln:find("wanted") or ln:find("star") or ln:find("bounty") then
+						if (type(desc.Value) == "number" and desc.Value > 0) or desc.Value == true then
+							reason = "Wanted" .. (type(desc.Value) == "number" and (" ★" .. tostring(desc.Value)) or "")
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if not reason and plr.Character then
+		local equipped = plr.Character:FindFirstChildWhichIsA("Tool")
+		if equipped then
+			local tn = string.lower(equipped.Name)
+			if tn:find("gun") or tn:find("pistol") or tn:find("rifle") or tn:find("ak") or tn:find("ar") or tn:find("smg") or tn:find("shotgun") or tn:find("glock") or tn:find("knife") or tn:find("crowbar") or tn:find("bag") or tn:find("drill") then
+				reason = "Armed (" .. equipped.Name .. ")"
+			end
+		end
+	end
+
+	if reason then
+		return true, reason
+	end
+	if not isSameTeam(plr) then
+		return false, getPlayerTeamKey(plr) or "Civilian"
+	end
+	return false, "Ally"
 end
 
 local rayParams = RaycastParams.new()
@@ -1160,6 +1217,142 @@ onCleanup(function()
 	pcall(resetCamera)
 end)
 
+local function findNearestSuspect(maxRange, preferWanted)
+	local char = LocalPlayer.Character
+	local myHrp = getHRP(char)
+	if not myHrp then return nil, nil end
+
+	local bestPlr, bestHrp, bestDist = nil, nil, maxRange
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer and not isSameTeam(plr) and plr.Character then
+			local hrp = getHRP(plr.Character)
+			local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+			if hrp and hum and hum.Health > 0 then
+				local dist = (hrp.Position - myHrp.Position).Magnitude
+				if dist <= bestDist then
+					local wanted = isSuspectOrWanted(plr)
+					if not preferWanted or wanted then
+						bestDist = dist
+						bestPlr = plr
+						bestHrp = hrp
+					end
+				end
+			end
+		end
+	end
+	return bestPlr, bestHrp
+end
+
+local function equipToolByKeywords(keywords)
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local bp = LocalPlayer:FindFirstChild("Backpack")
+	if not (char and hum) then return nil end
+
+	local equipped = char:FindFirstChildWhichIsA("Tool")
+	if equipped then
+		local ln = string.lower(equipped.Name)
+		for _, kw in ipairs(keywords) do
+			if ln:find(kw, 1, true) then
+				return equipped
+			end
+		end
+	end
+
+	if bp then
+		for _, tool in ipairs(bp:GetChildren()) do
+			if tool:IsA("Tool") then
+				local ln = string.lower(tool.Name)
+				for _, kw in ipairs(keywords) do
+					if ln:find(kw, 1, true) then
+						hum:EquipTool(tool)
+						return tool
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+task.spawn(function()
+	while env.ZenxhubSDCleanup do
+		if Config.AutoCuff then
+			local char = LocalPlayer.Character
+			local myHrp = getHRP(char)
+			local targetPlr, targetHrp = findNearestSuspect(Config.CuffRange, false)
+			if myHrp and targetPlr and targetHrp then
+				local cuffTool = equipToolByKeywords({ "cuff", "handcuff", "arrest", "detain", "zip" })
+				if cuffTool then
+					pcall(function() cuffTool:Activate() end)
+				end
+				for _, obj in ipairs(targetPlr.Character:GetDescendants()) do
+					if obj:IsA("ProximityPrompt") and obj.Enabled then
+						local an = string.lower(obj.ActionText .. " " .. obj.Name)
+						if an:find("cuff") or an:find("arrest") or an:find("detain") or an:find("search") then
+							if fireproximityprompt then
+								pcall(fireproximityprompt, obj)
+							end
+						end
+					end
+				end
+				pcall(function()
+					for _, rem in ipairs(ReplicatedStorage:GetDescendants()) do
+						if rem:IsA("RemoteEvent") then
+							local rn = string.lower(rem.Name)
+							if rn:find("cuff") or rn:find("arrest") or rn:find("detain") then
+								rem:FireServer(targetPlr)
+								rem:FireServer(targetPlr.Character)
+							end
+						end
+					end
+				end)
+			end
+			task.wait(0.25)
+		else
+			task.wait(0.35)
+		end
+	end
+end)
+
+task.spawn(function()
+	while env.ZenxhubSDCleanup do
+		if Config.AutoTaser then
+			local char = LocalPlayer.Character
+			local myHrp = getHRP(char)
+			local targetPlr, targetHrp = findNearestSuspect(Config.TaserRange, true)
+			if not targetPlr then
+				targetPlr, targetHrp = findNearestSuspect(Config.TaserRange, false)
+			end
+			if myHrp and targetPlr and targetHrp then
+				local taserTool = equipToolByKeywords({ "taser", "stun", "x26", "zeus" })
+				if taserTool then
+					local lookPos = Vector3.new(targetHrp.Position.X, myHrp.Position.Y, targetHrp.Position.Z)
+					if (lookPos - myHrp.Position).Magnitude > 0.1 then
+						myHrp.CFrame = CFrame.lookAt(myHrp.Position, lookPos)
+					end
+					pcall(function() taserTool:Activate() end)
+				end
+			end
+			task.wait(0.6)
+		else
+			task.wait(0.4)
+		end
+	end
+end)
+
+track(RunService.Heartbeat:Connect(function()
+	if not Config.PoliceNoStun then return end
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return end
+	if hum.PlatformStand then hum.PlatformStand = false end
+	local st = hum:GetState()
+	if st == Enum.HumanoidStateType.Ragdoll or st == Enum.HumanoidStateType.FallingDown then
+		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end
+end))
+
 local function isGuiChainVisible(inst)
 	local curr = inst
 	while curr and curr ~= game do
@@ -1378,6 +1571,28 @@ task.spawn(function()
 						local color = (Config.ShowTeamColor and plr.Team) and plr.TeamColor.Color or Theme.Accent
 						local label = string.format("%s [%s]\nHP: %d | %dm", plr.DisplayName, teamName, math.floor(hum.Health), dist)
 						makeEspTag(hrp, "PlayerESP", label, color)
+					end
+				end
+			end
+		end
+
+		if not Config.WantedESP then
+			clearEsp("WantedESP")
+		elseif myHrp then
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LocalPlayer and plr.Character then
+					local hrp = getHRP(plr.Character)
+					local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+					if hrp and hum and hum.Health > 0 then
+						local isSus, reason = isSuspectOrWanted(plr)
+						if isSus then
+							local dist = math.floor((hrp.Position - myHrp.Position).Magnitude)
+							local label = string.format("🚨 %s [%s]\nHP: %d | %dm", plr.DisplayName, reason, math.floor(hum.Health), dist)
+							makeEspTag(hrp, "WantedESP", label, Theme.Danger)
+						elseif espPool[hrp] and espPool[hrp].Name == "WantedESP" then
+							pcall(function() espPool[hrp]:Destroy() end)
+							espPool[hrp] = nil
+						end
 					end
 				end
 			end
@@ -1623,6 +1838,7 @@ track(LocalPlayer.Idled:Connect(function()
 end))
 
 local tAim = addTab("Aimbot Lock", "🎯")
+local tPolice = addTab("Cảnh Sát", "👮")
 local tEsp = addTab("Định Vị ESP", "👁️")
 local tJob = addTab("Công Việc", "💼")
 local tCar = addTab("Xe & Di Chuyển", "🏎️")
@@ -1662,6 +1878,39 @@ tAim:Toggle("Bỏ Qua Đồng Đội (Team Check)", true, function(v)
 end)
 tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", true, function(v)
 	Config.WallCheck = v
+end)
+
+tPolice:Section("Truy Nã & Bắt Giữ (San Diego CS)")
+tPolice:Toggle("ESP Đối Tượng Truy Nã / Cầm Súng", false, function(v)
+	Config.WantedESP = v
+	if not v then clearEsp("WantedESP") end
+end)
+tPolice:Toggle("Tự Động Còng Tay Khi Áp Sát", false, function(v)
+	Config.AutoCuff = v
+end)
+tPolice:Slider("Tầm Còng Tay Tự Động", 5, 25, 12, " studs", function(v)
+	Config.CuffRange = v
+end)
+tPolice:Toggle("Tự Động Bắn Súng Điện (Taser)", false, function(v)
+	Config.AutoTaser = v
+end)
+tPolice:Slider("Tầm Bắn Taser", 10, 60, 35, " studs", function(v)
+	Config.TaserRange = v
+end)
+tPolice:Toggle("Chống Ngã / Choáng Khi Truy Đuổi", false, function(v)
+	Config.PoliceNoStun = v
+end)
+tPolice:Button("⚡ Áp Sát Sau Lưng Đối Tượng Truy Nã", function()
+	local char = LocalPlayer.Character
+	local myHrp = getHRP(char)
+	if not myHrp then return end
+	local targetPlr, targetHrp = findNearestSuspect(150, true)
+	if not targetPlr then
+		targetPlr, targetHrp = findNearestSuspect(150, false)
+	end
+	if targetHrp then
+		myHrp.CFrame = targetHrp.CFrame * CFrame.new(0, 0, 3.5)
+	end
 end)
 
 tEsp:Section("Người Chơi & Phe Phái")
