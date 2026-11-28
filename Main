@@ -288,7 +288,7 @@ local titleLabel = create("TextLabel", {
 	Position = UDim2.new(0, 16, 0, 0),
 	Size = UDim2.new(1, -90, 1, 0),
 	Font = Enum.Font.GothamBold,
-	Text = "⚡ ZENXHUB | SAN DIEGO V1.20",
+	Text = "⚡ ZENXHUB | SAN DIEGO V1.21",
 	TextSize = 14,
 	TextColor3 = Color3.new(1, 1, 1),
 	TextXAlignment = Enum.TextXAlignment.Left,
@@ -788,6 +788,8 @@ local Config = {
 	MaxLockDistance = 250,
 	AimPart = "Head",
 	AimPrediction = 0.04,
+	AimHeightOffset = 0.15,
+	AimSideOffset = 0,
 	TeamCheck = true,
 	WallCheck = true,
 	PlayerESP = false,
@@ -865,13 +867,14 @@ end
 
 local function createMarker(model)
 	destroyMarker()
+	local headPart = model and model:FindFirstChild("Head")
 	local m = Instance.new("BillboardGui")
 	m.Name = "LockTargetMarker"
-	m.Adornee = model
+	m.Adornee = headPart or model
 	m.AlwaysOnTop = true
 	m.Enabled = true
-	m.Size = UDim2.fromOffset(80, 80)
-	m.StudsOffsetWorldSpace = Vector3.new(0, 0.4, 0)
+	m.Size = UDim2.fromOffset(48, 48)
+	m.StudsOffsetWorldSpace = Vector3.zero
 	m.MaxDistance = Config.MaxLockDistance
 	m.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	m.Parent = parentGui
@@ -879,11 +882,11 @@ local function createMarker(model)
 		Parent = m,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(20, 20),
+		Size = UDim2.fromOffset(18, 18),
 		BackgroundTransparency = 1,
 	}, {
 		create("UICorner", { CornerRadius = UDim.new(1, 0) }),
-		stroke(Theme.Good, 2, 0.1),
+		stroke(Theme.Good, 2, 0.05),
 	})
 	targetMarker = m
 end
@@ -1163,6 +1166,12 @@ local function getAimPart(model)
 	return model:FindFirstChild("UpperTorso") or getHRP(model) or model.PrimaryPart or model:FindFirstChild("Head")
 end
 
+local function getAimScreenCenter(cam)
+	local vp = cam.ViewportSize
+	local inset = GuiService:GetGuiInset()
+	return Vector2.new(vp.X * 0.5, vp.Y * 0.5 - inset.Y * 0.5)
+end
+
 local function isPlayerTargetable(plr, myPos, checkWall)
 	if not plr or plr == LocalPlayer or not plr.Parent then return nil end
 	if isSameTeam(plr) then return nil end
@@ -1192,8 +1201,7 @@ local function findBestTargetInFov()
 	local cam = Workspace.CurrentCamera
 	if not (hrp and cam) then return nil end
 
-	local vp = cam.ViewportSize
-	local center = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+	local center = getAimScreenCenter(cam)
 	local bestPlr, bestScore = nil, math.huge
 
 	for _, p in ipairs(Players:GetPlayers()) do
@@ -1267,7 +1275,12 @@ track(UserInputService.InputBegan:Connect(function(input, gp)
 end))
 
 local lastScan = 0
-RunService:BindToRenderStep("ZenxhubSDCamAim", Enum.RenderPriority.Camera.Value + 1, function()
+RunService:BindToRenderStep("ZenxhubSDCamAim", Enum.RenderPriority.Last.Value, function()
+	local cam = Workspace.CurrentCamera
+	if cam then
+		local center = getAimScreenCenter(cam)
+		FovCircle.Position = UDim2.fromOffset(center.X, center.Y)
+	end
 	FovCircle.Size = UDim2.fromOffset(Config.FovRadius * 2, Config.FovRadius * 2)
 	FovCircle.Visible = Config.AimEnabled and Config.UseFov and Config.ShowFovCircle
 
@@ -1277,7 +1290,6 @@ RunService:BindToRenderStep("ZenxhubSDCamAim", Enum.RenderPriority.Camera.Value 
 	end
 	if UserInputService:GetFocusedTextBox() then return end
 
-	local cam = Workspace.CurrentCamera
 	local char = LocalPlayer.Character
 	local myHrp = getHRP(char)
 	local myHum = char and char:FindFirstChildOfClass("Humanoid")
@@ -1313,19 +1325,20 @@ RunService:BindToRenderStep("ZenxhubSDCamAim", Enum.RenderPriority.Camera.Value 
 
 	if not targetPart then return end
 
-	if targetMarker and lockedPlayer and lockedPlayer.Character and targetMarker.Adornee ~= lockedPlayer.Character then
-		targetMarker.Adornee = lockedPlayer.Character
+	if targetMarker and targetMarker.Adornee ~= targetPart then
+		targetMarker.Adornee = targetPart
 	end
 
 	local vel = targetPart.AssemblyLinearVelocity
-	local predictedPos = targetPart.Position + vel * Config.AimPrediction
-	if targetPart.Name == "Head" then
-		predictedPos = predictedPos - Vector3.new(0, 0.1, 0)
-	end
-
 	local camPos = cam.CFrame.Position
-	if (predictedPos - camPos).Magnitude > 0.1 then
-		cam.CFrame = CFrame.lookAt(camPos, predictedPos)
+	local rightVec = cam.CFrame.RightVector
+	local aimPoint = targetPart.Position
+		+ vel * Config.AimPrediction
+		+ Vector3.new(0, Config.AimHeightOffset, 0)
+		+ rightVec * Config.AimSideOffset
+
+	if (aimPoint - camPos).Magnitude > 0.1 then
+		cam.CFrame = CFrame.lookAt(camPos, aimPoint)
 	end
 end)
 
@@ -2154,6 +2167,12 @@ tAim:Slider("Giới Hạn Khoảng Cách", 20, 500, 250, " studs", function(v)
 end)
 tAim:Slider("Độ Bù Chuyển Động (x0.01)", 0, 20, 4, "", function(v)
 	Config.AimPrediction = v * 0.01
+end)
+tAim:Slider("Chỉnh Độ Cao Tâm (x0.05)", -20, 20, 3, "", function(v)
+	Config.AimHeightOffset = v * 0.05
+end)
+tAim:Slider("Chỉnh Lệch Ngang Tâm (x0.05)", -20, 20, 0, "", function(v)
+	Config.AimSideOffset = v * 0.05
 end)
 tAim:Dropdown("Bộ Phận Ngắm", { "Head", "UpperTorso" }, "Head", function(v)
 	Config.AimPart = v
