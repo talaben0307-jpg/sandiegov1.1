@@ -39,20 +39,6 @@ local function onCleanup(fn)
 	table.insert(cleanups, fn)
 end
 
-env.ZenxhubSDCleanup = function()
-	pcall(function() RunService:UnbindFromRenderStep("ZenxhubSDCamAim") end)
-	for _, c in ipairs(connections) do
-		pcall(function() c:Disconnect() end)
-	end
-	table.clear(connections)
-	for _, fn in ipairs(cleanups) do
-		pcall(fn)
-	end
-	table.clear(cleanups)
-	table.clear(spinners)
-	env.ZenxhubSDCleanup = nil
-end
-
 local Theme = {
 	Background = Color3.fromRGB(11, 11, 18),
 	Panel = Color3.fromRGB(18, 18, 28),
@@ -234,11 +220,17 @@ local EspGui = create("ScreenGui", {
 	Parent = parentGui,
 })
 
+local HighlightFolder = create("Folder", {
+	Name = "ZenxhubSDHighlights",
+	Parent = parentGui,
+})
+
 onCleanup(function()
 	MainGui:Destroy()
 	FloatGui:Destroy()
 	LockBtnGui:Destroy()
 	EspGui:Destroy()
+	HighlightFolder:Destroy()
 end)
 
 local Main = create("Frame", {
@@ -296,7 +288,7 @@ local titleLabel = create("TextLabel", {
 	Position = UDim2.new(0, 16, 0, 0),
 	Size = UDim2.new(1, -90, 1, 0),
 	Font = Enum.Font.GothamBold,
-	Text = "⚡ ZENXHUB | SAN DIEGO V1.18",
+	Text = "⚡ ZENXHUB | SAN DIEGO V1.20",
 	TextSize = 14,
 	TextColor3 = Color3.new(1, 1, 1),
 	TextXAlignment = Enum.TextXAlignment.Left,
@@ -372,9 +364,6 @@ FloatBtn.MouseButton1Click:Connect(function()
 	if not floatWasDragged() then
 		setMenuVisible(true)
 	end
-end)
-CloseBtn.MouseButton1Click:Connect(function()
-	if env.ZenxhubSDCleanup then env.ZenxhubSDCleanup() end
 end)
 
 track(UserInputService.InputBegan:Connect(function(input, gp)
@@ -802,9 +791,13 @@ local Config = {
 	TeamCheck = true,
 	WallCheck = true,
 	PlayerESP = false,
+	PlayerHighlight = false,
 	ShowTeamColor = true,
 	ItemCashESP = false,
+	PoliceEsp = false,
+	PoliceHighlight = true,
 	WantedESP = false,
+	WantedHighlight = true,
 	AutoCuff = false,
 	CuffRange = 12,
 	AutoTaser = false,
@@ -1027,6 +1020,21 @@ local function isSameTeam(plr)
 	return false
 end
 
+local function parseValidStars(raw)
+	if type(raw) == "number" then
+		local n = math.floor(raw)
+		if n >= 1 and n <= 5 then
+			return n
+		end
+	elseif type(raw) == "string" then
+		local num = tonumber(raw:match("(%d+)"))
+		if num and num >= 1 and num <= 5 then
+			return num
+		end
+	end
+	return 0
+end
+
 local function isSuspectOrWanted(plr)
 	if not plr or plr == LocalPlayer then return false, "" end
 	local faction, roleLabel = getPlayerFactionAndRole(plr)
@@ -1035,26 +1043,28 @@ local function isSuspectOrWanted(plr)
 	end
 
 	local wantedStars = 0
+	local hasWantedBool = false
+
 	for _, container in ipairs({ plr, plr.Character }) do
 		if container then
 			for attr, val in pairs(container:GetAttributes()) do
 				local la = string.lower(attr)
-				if la == "wanted" or la == "wantedlevel" or la == "stars" or la == "star" or la == "bounty" then
-					if type(val) == "number" and val > 0 then
-						wantedStars = math.max(wantedStars, math.floor(val))
-					elseif val == true then
-						wantedStars = math.max(wantedStars, 1)
+				if la == "wanted" or la == "wantedlevel" or la == "wantedstars" or la == "stars" or la == "star" then
+					if val == true then
+						hasWantedBool = true
+					else
+						wantedStars = math.max(wantedStars, parseValidStars(val))
 					end
 				end
 			end
 			for _, desc in ipairs(container:GetChildren()) do
-				if desc:IsA("IntValue") or desc:IsA("NumberValue") or desc:IsA("BoolValue") then
+				if desc:IsA("IntValue") or desc:IsA("NumberValue") or desc:IsA("BoolValue") or desc:IsA("StringValue") then
 					local ln = string.lower(desc.Name)
-					if ln == "wanted" or ln == "wantedlevel" or ln == "stars" or ln == "star" or ln == "bounty" then
-						if type(desc.Value) == "number" and desc.Value > 0 then
-							wantedStars = math.max(wantedStars, math.floor(desc.Value))
-						elseif desc.Value == true then
-							wantedStars = math.max(wantedStars, 1)
+					if ln == "wanted" or ln == "wantedlevel" or ln == "wantedstars" or ln == "stars" or ln == "star" then
+						if desc:IsA("BoolValue") and desc.Value == true then
+							hasWantedBool = true
+						else
+							wantedStars = math.max(wantedStars, parseValidStars(desc.Value))
 						end
 					end
 				end
@@ -1063,16 +1073,30 @@ local function isSuspectOrWanted(plr)
 			if ls then
 				for _, stat in ipairs(ls:GetChildren()) do
 					local ln = string.lower(stat.Name)
-					if (ln == "wanted" or ln == "stars" or ln == "bounty") and (stat:IsA("IntValue") or stat:IsA("NumberValue")) and stat.Value > 0 then
-						wantedStars = math.max(wantedStars, math.floor(stat.Value))
+					if (ln == "wanted" or ln == "wantedlevel" or ln == "stars" or ln == "star") then
+						wantedStars = math.max(wantedStars, parseValidStars(stat.Value))
 					end
 				end
 			end
 		end
 	end
 
-	if wantedStars > 0 then
+	local ohText = select(1, getOverheadRoleInfo(plr))
+	if ohText ~= "" then
+		local starMatches = 0
+		for _ in ohText:gmatch("★") do
+			starMatches += 1
+		end
+		if starMatches >= 1 and starMatches <= 5 then
+			wantedStars = math.max(wantedStars, starMatches)
+		end
+	end
+
+	if wantedStars >= 1 then
 		return true, string.format("Wanted ★%d", wantedStars)
+	end
+	if hasWantedBool then
+		return true, "Wanted"
 	end
 
 	if faction == "CRIMINAL" then
@@ -1090,7 +1114,7 @@ local function isSuspectOrWanted(plr)
 			}
 			for _, ww in ipairs(weaponWords) do
 				if tn:find(ww, 1, true) then
-					return true, "Armed: " .. equipped.Name
+					return true, "Cầm đồ: " .. equipped.Name
 				end
 			end
 		end
@@ -1618,18 +1642,73 @@ task.spawn(function()
 end)
 
 local espPool = {}
+local highlightPool = {}
+
 local function clearEsp(tag)
-	for obj, gui in pairs(espPool) do
+	for key, gui in pairs(espPool) do
 		if not tag or gui.Name == tag then
 			pcall(function() gui:Destroy() end)
-			espPool[obj] = nil
+			espPool[key] = nil
 		end
 	end
 end
 
-local function makeEspTag(adornee, tagName, text, color)
-	if espPool[adornee] and espPool[adornee].Parent then
-		local lbl = espPool[adornee]:FindFirstChildOfClass("TextLabel")
+local function clearHighlights(tag)
+	for key, hl in pairs(highlightPool) do
+		if not tag or hl.Name == tag then
+			pcall(function() hl:Destroy() end)
+			highlightPool[key] = nil
+		end
+	end
+end
+
+local function syncHighlight(key, tagName, charModel, fillColor, outlineColor, fillTrans, outlineTrans)
+	if not (charModel and charModel.Parent) then
+		if highlightPool[key] then
+			pcall(function() highlightPool[key]:Destroy() end)
+			highlightPool[key] = nil
+		end
+		return
+	end
+	local hl = highlightPool[key]
+	if hl and hl.Parent then
+		hl.Adornee = charModel
+		hl.FillColor = fillColor
+		hl.OutlineColor = outlineColor or Color3.new(1, 1, 1)
+		hl.FillTransparency = fillTrans or 0.45
+		hl.OutlineTransparency = outlineTrans or 0.05
+		return
+	end
+	local newHl = Instance.new("Highlight")
+	newHl.Name = tagName
+	newHl.Adornee = charModel
+	newHl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	newHl.FillColor = fillColor
+	newHl.OutlineColor = outlineColor or Color3.new(1, 1, 1)
+	newHl.FillTransparency = fillTrans or 0.45
+	newHl.OutlineTransparency = outlineTrans or 0.05
+	newHl.Parent = HighlightFolder
+	highlightPool[key] = newHl
+end
+
+local function removeSingleEsp(key)
+	if espPool[key] then
+		pcall(function() espPool[key]:Destroy() end)
+		espPool[key] = nil
+	end
+end
+
+local function removeSingleHighlight(key)
+	if highlightPool[key] then
+		pcall(function() highlightPool[key]:Destroy() end)
+		highlightPool[key] = nil
+	end
+end
+
+local function makeEspTag(key, adornee, tagName, text, color)
+	if espPool[key] and espPool[key].Parent then
+		espPool[key].Adornee = adornee
+		local lbl = espPool[key]:FindFirstChildOfClass("TextLabel")
 		if lbl then
 			lbl.Text = text
 			lbl.TextColor3 = color
@@ -1640,7 +1719,7 @@ local function makeEspTag(adornee, tagName, text, color)
 	bb.Name = tagName
 	bb.Adornee = adornee
 	bb.AlwaysOnTop = true
-	bb.Size = UDim2.fromOffset(180, 34)
+	bb.Size = UDim2.fromOffset(195, 36)
 	bb.StudsOffset = Vector3.new(0, 2.8, 0)
 	bb.Parent = EspGui
 
@@ -1654,27 +1733,118 @@ local function makeEspTag(adornee, tagName, text, color)
 	lbl.TextSize = 12
 	lbl.Parent = bb
 
-	espPool[adornee] = bb
+	espPool[key] = bb
 end
+
+env.ZenxhubSDCleanup = function()
+	pcall(function() RunService:UnbindFromRenderStep("ZenxhubSDCamAim") end)
+	for _, c in ipairs(connections) do
+		pcall(function() c:Disconnect() end)
+	end
+	table.clear(connections)
+	for _, fn in ipairs(cleanups) do
+		pcall(fn)
+	end
+	table.clear(cleanups)
+	table.clear(spinners)
+	clearEsp()
+	clearHighlights()
+	env.ZenxhubSDCleanup = nil
+end
+
+CloseBtn.MouseButton1Click:Connect(function()
+	if env.ZenxhubSDCleanup then env.ZenxhubSDCleanup() end
+end)
 
 task.spawn(function()
 	while env.ZenxhubSDCleanup do
 		local char = LocalPlayer.Character
 		local myHrp = getHRP(char)
+		local activePlayers = {}
+
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LocalPlayer then
+				activePlayers[plr] = true
+			end
+		end
+
+		for key, _ in pairs(espPool) do
+			if typeof(key) == "Instance" and key:IsA("Player") and not activePlayers[key] then
+				removeSingleEsp(key)
+			end
+		end
+		for key, _ in pairs(highlightPool) do
+			if typeof(key) == "Instance" and key:IsA("Player") and not activePlayers[key] then
+				removeSingleHighlight(key)
+			end
+		end
 
 		if not Config.PlayerESP then
 			clearEsp("PlayerESP")
 		elseif myHrp then
 			for _, plr in ipairs(Players:GetPlayers()) do
-				if plr ~= LocalPlayer and plr.Character then
-					local hrp = getHRP(plr.Character)
-					local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+				if plr ~= LocalPlayer then
+					local pChar = plr.Character
+					local hrp = getHRP(pChar)
+					local hum = pChar and pChar:FindFirstChildOfClass("Humanoid")
 					if hrp and hum and hum.Health > 0 then
 						local dist = math.floor((hrp.Position - myHrp.Position).Magnitude)
 						local _, roleLabel = getPlayerFactionAndRole(plr)
 						local color = (Config.ShowTeamColor and plr.Team) and plr.TeamColor.Color or Theme.Accent
 						local label = string.format("%s [%s]\nHP: %d | %dm", plr.DisplayName, roleLabel, math.floor(hum.Health), dist)
-						makeEspTag(hrp, "PlayerESP", label, color)
+						makeEspTag(plr, hrp, "PlayerESP", label, color)
+					else
+						removeSingleEsp(plr)
+					end
+				end
+			end
+		end
+
+		if not Config.PlayerHighlight then
+			clearHighlights("PlayerHL")
+		else
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LocalPlayer then
+					local pChar = plr.Character
+					local hum = pChar and pChar:FindFirstChildOfClass("Humanoid")
+					if pChar and hum and hum.Health > 0 then
+						local color = (Config.ShowTeamColor and plr.Team) and plr.TeamColor.Color or Theme.Accent
+						syncHighlight(plr, "PlayerHL", pChar, color, Color3.new(1, 1, 1), 0.45, 0.05)
+					else
+						removeSingleHighlight(plr)
+					end
+				end
+			end
+		end
+
+		if not Config.PoliceEsp then
+			clearEsp("PoliceESP")
+			clearHighlights("PoliceHL")
+		elseif myHrp then
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LocalPlayer then
+					local cKey = "C_" .. tostring(plr.UserId)
+					local pChar = plr.Character
+					local hrp = getHRP(pChar)
+					local hum = pChar and pChar:FindFirstChildOfClass("Humanoid")
+					if hrp and hum and hum.Health > 0 then
+						local faction, roleLabel = getPlayerFactionAndRole(plr)
+						if faction == "POLICE" then
+							local dist = math.floor((hrp.Position - myHrp.Position).Magnitude)
+							local label = string.format("👮 %s [%s]\nHP: %d | %dm", plr.DisplayName, roleLabel, math.floor(hum.Health), dist)
+							makeEspTag(cKey, hrp, "PoliceESP", label, Theme.Accent)
+							if Config.PoliceHighlight then
+								syncHighlight(cKey, "PoliceHL", pChar, Theme.Accent, Color3.new(1, 1, 1), 0.72, 0)
+							else
+								removeSingleHighlight(cKey)
+							end
+						else
+							removeSingleEsp(cKey)
+							removeSingleHighlight(cKey)
+						end
+					else
+						removeSingleEsp(cKey)
+						removeSingleHighlight(cKey)
 					end
 				end
 			end
@@ -1682,21 +1852,32 @@ task.spawn(function()
 
 		if not Config.WantedESP then
 			clearEsp("WantedESP")
+			clearHighlights("WantedHL")
 		elseif myHrp then
 			for _, plr in ipairs(Players:GetPlayers()) do
-				if plr ~= LocalPlayer and plr.Character then
-					local hrp = getHRP(plr.Character)
-					local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+				if plr ~= LocalPlayer then
+					local wKey = "W_" .. tostring(plr.UserId)
+					local pChar = plr.Character
+					local hrp = getHRP(pChar)
+					local hum = pChar and pChar:FindFirstChildOfClass("Humanoid")
 					if hrp and hum and hum.Health > 0 then
 						local isSus, reason = isSuspectOrWanted(plr)
 						if isSus then
 							local dist = math.floor((hrp.Position - myHrp.Position).Magnitude)
 							local label = string.format("🚨 %s [%s]\nHP: %d | %dm", plr.DisplayName, reason, math.floor(hum.Health), dist)
-							makeEspTag(hrp, "WantedESP", label, Theme.Danger)
-						elseif espPool[hrp] and espPool[hrp].Name == "WantedESP" then
-							pcall(function() espPool[hrp]:Destroy() end)
-							espPool[hrp] = nil
+							makeEspTag(wKey, hrp, "WantedESP", label, Theme.Danger)
+							if Config.WantedHighlight then
+								syncHighlight(wKey, "WantedHL", pChar, Theme.Danger, Theme.Warn, 0.45, 0.05)
+							else
+								removeSingleHighlight(wKey)
+							end
+						else
+							removeSingleEsp(wKey)
+							removeSingleHighlight(wKey)
 						end
+					else
+						removeSingleEsp(wKey)
+						removeSingleHighlight(wKey)
 					end
 				end
 			end
@@ -1713,7 +1894,7 @@ task.spawn(function()
 						if part and part.Parent and (not char or not part:IsDescendantOf(char)) then
 							local dist = math.floor((part.Position - myHrp.Position).Magnitude)
 							if dist <= 600 then
-								makeEspTag(part, "ItemCashESP", string.format("💵 %s [%dm]", obj.Name, dist), Theme.Good)
+								makeEspTag(part, part, "ItemCashESP", string.format("💵 %s [%dm]", obj.Name, dist), Theme.Good)
 							end
 						end
 					end
@@ -1721,7 +1902,7 @@ task.spawn(function()
 			end
 		end
 
-		task.wait(0.85)
+		task.wait(0.6)
 	end
 end)
 
@@ -1984,10 +2165,30 @@ tAim:Toggle("Kiểm Tra Vật Cản (Wall Check)", true, function(v)
 	Config.WallCheck = v
 end)
 
+tPolice:Section("ESP Cảnh Sát (Cho Phe Cướp)")
+tPolice:Toggle("ESP Cảnh Sát", false, function(v)
+	Config.PoliceEsp = v
+	if not v then
+		clearEsp("PoliceESP")
+		clearHighlights("PoliceHL")
+	end
+end)
+tPolice:Toggle("Highlight Viền Cảnh Sát", true, function(v)
+	Config.PoliceHighlight = v
+	if not v then clearHighlights("PoliceHL") end
+end)
+
 tPolice:Section("Truy Nã & Bắt Giữ (San Diego CS)")
 tPolice:Toggle("ESP Đối Tượng Truy Nã / Cầm Súng", false, function(v)
 	Config.WantedESP = v
-	if not v then clearEsp("WantedESP") end
+	if not v then
+		clearEsp("WantedESP")
+		clearHighlights("WantedHL")
+	end
+end)
+tPolice:Toggle("Tô Sáng Người Truy Nã (Highlight)", true, function(v)
+	Config.WantedHighlight = v
+	if not v then clearHighlights("WantedHL") end
 end)
 tPolice:Toggle("Tự Động Còng Tay Khi Áp Sát", false, function(v)
 	Config.AutoCuff = v
@@ -2018,11 +2219,21 @@ tPolice:Button("⚡ Áp Sát Sau Lưng Đối Tượng Truy Nã", function()
 end)
 
 tEsp:Section("Người Chơi & Phe Phái")
-tEsp:Toggle("Bật ESP Người Chơi", false, function(v) Config.PlayerESP = v end)
+tEsp:Toggle("Bật ESP Tên & Máu", false, function(v)
+	Config.PlayerESP = v
+	if not v then clearEsp("PlayerESP") end
+end)
+tEsp:Toggle("Tô Sáng Toàn Thân (Highlight)", false, function(v)
+	Config.PlayerHighlight = v
+	if not v then clearHighlights("PlayerHL") end
+end)
 tEsp:Toggle("Hiển Thị Theo Màu Team", true, function(v) Config.ShowTeamColor = v end)
 
 tEsp:Section("Tiền & Vật Phẩm Thành Phố")
-tEsp:Toggle("ESP Tiền / ATM / Hòm Hàng", false, function(v) Config.ItemCashESP = v end)
+tEsp:Toggle("ESP Tiền / ATM / Hòm Hàng", false, function(v)
+	Config.ItemCashESP = v
+	if not v then clearEsp("ItemCashESP") end
+end)
 
 tJob:Section("Hỗ Trợ Làm Việc & Tương Tác")
 tJob:Toggle("Bấm E Tức Thì (Instant Prompt)", false, function(v) Config.InstantPrompt = v end)
